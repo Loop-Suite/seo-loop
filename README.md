@@ -153,6 +153,19 @@ citation_required = true   # 인용 부족 시 60점 상한
 
 동봉 스펙: `specs/example-blogpost.toml`. 콘텐츠 브리프 예시: `brief.example.md`.
 
+## 다각도 리뷰 반영 내역
+
+review-panel(functionality/good_things/tests 렌즈) 결과 CONFIRMED된 항목을 반영했다:
+- 프론트매터 파서가 CRLF 문서에서 줄마다 1바이트씩 과소 계산해 앞부분이 잘려나가던 버그를
+  수정(`.lines()` 대신 `split('\n')` 기반 오프셋 계산으로 재작성).
+- 닫는 `---`가 없는 프론트매터를 명시적으로 감지해 경고(이전엔 조용히 전체를 본문으로
+  처리해 가독성·헤딩 검사가 오염됐음).
+- `is_internal_url`이 부분 문자열 매칭이라 `notexample.com`/`example.com.evil.com` 같은
+  호스트도 내부 링크로 오분류되던 문제를 정확한 호스트 비교로 수정.
+- 문단 길이 검사 추가(CyberCraftBD/power-seo(MIT)의 아이디어를 한국어 글자수 기준으로
+  재설계 — NOTICE 참고).
+- CRLF·미닫힘 프론트매터·스푸핑 방지·한국어 가독성 None 분기·공백뿐인 alt 등 테스트 커버리지 보강.
+
 ## 한계 · 가정
 
 - **키워드 밀도는 검사하지 않는다.** 배치 존재 여부(title/H1/도입부)만 본다 — 밀도 %는 업계 컨센서스가

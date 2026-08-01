@@ -37,22 +37,33 @@ pub struct Metrics {
 }
 
 /// 프론트매터(`---`로 감싼 title/meta_description)와 본문을 분리한다.
+///
+/// 바이트 오프셋은 `.lines()`(개행 문자 제거)가 아니라 `split('\n')`로 계산한다 —
+/// `.lines()` 기준 `line.len()+1`은 LF만 가정해서 CRLF 문서에서 줄마다 1바이트씩
+/// 과소 계산되고, 그 오차가 문자 경계 밖 슬라이싱(panic)이나 앞부분이 잘려나간
+/// 본문으로 이어지는 버그가 있었다. `split('\n')`은 `\r`을 앞 줄에 남겨두므로
+/// `line.len()+1`이 항상 정확한 소비 바이트 수가 된다.
 pub fn parse_front_matter(doc: &str) -> (Option<String>, Option<String>, &str) {
     let trimmed = doc.trim_start_matches('\u{feff}');
     if !trimmed.starts_with("---") {
         return (None, None, doc);
     }
-    let mut lines = trimmed.lines();
-    lines.next(); // 첫 "---"
+    let after_marker = &trimmed[3..];
+    let first_nl = match after_marker.find('\n') {
+        Some(i) => i,
+        None => return (None, None, doc), // "---" 뒤에 개행조차 없음 → 프론트매터 아님
+    };
+    let rest = &after_marker[first_nl + 1..];
+
     let mut title = None;
     let mut meta = None;
-    let mut consumed = "---\n".len();
-    let mut closed = false;
-    for line in lines {
-        consumed += line.len() + 1;
-        let t = line.trim();
+    let mut offset = 0usize;
+    let mut close_end: Option<usize> = None;
+    for line in rest.split('\n') {
+        let consumed_this_line = line.len() + 1; // split('\n')이라 구분자는 항상 정확히 1바이트
+        let t = line.trim_end_matches('\r').trim();
         if t == "---" {
-            closed = true;
+            close_end = Some((offset + consumed_this_line).min(rest.len()));
             break;
         }
         if let Some(v) = t.strip_prefix("title:") {
@@ -60,12 +71,24 @@ pub fn parse_front_matter(doc: &str) -> (Option<String>, Option<String>, &str) {
         } else if let Some(v) = t.strip_prefix("meta_description:") {
             meta = Some(unquote(v.trim()));
         }
+        offset += consumed_this_line;
     }
-    if !closed {
-        return (None, None, doc);
+    let Some(close_end) = close_end else {
+        return (None, None, doc); // 닫는 "---" 없음 → format_issues에서 별도로 경고
+    };
+    let body = &rest[close_end..];
+    (title, meta, body.trim_start_matches(['\n', '\r']))
+}
+
+/// 프론트매터가 `---`로 시작했지만 닫는 `---`가 없어 파싱이 통째로 포기된 경우.
+/// (파싱 실패 시 `parse_front_matter`는 원본 `doc`을 그대로 반환하므로 포인터/길이가 doc과 같다)
+fn front_matter_unclosed(doc: &str) -> bool {
+    let trimmed = doc.trim_start_matches('\u{feff}');
+    if !trimmed.starts_with("---") {
+        return false;
     }
-    let body = &trimmed[consumed.min(trimmed.len())..];
-    (title, meta, body.trim_start_matches('\n'))
+    let (title, meta, body) = parse_front_matter(doc);
+    title.is_none() && meta.is_none() && body.len() == doc.len()
 }
 
 fn unquote(s: &str) -> String {
@@ -133,15 +156,24 @@ fn find_char(chars: &[char], from: usize, target: char) -> Option<usize> {
     (from..chars.len()).find(|&j| chars[j] == target)
 }
 
+/// 절대 URL의 호스트가 `site_domain`과 정확히 같거나 그 서브도메인인지 판정한다.
+/// (이전에는 `contains`로 부분 문자열만 검사해 `notexample.com`이나
+/// `example.com.evil.com` 같은 호스트도 "내부 링크"로 오분류될 수 있었다.)
 fn is_internal_url(url: &str, site_domain: &str) -> bool {
     let low = url.to_lowercase();
-    if low.starts_with("http://") || low.starts_with("https://") {
-        if site_domain.is_empty() {
-            return false;
+    let rest = low.strip_prefix("https://").or_else(|| low.strip_prefix("http://"));
+    match rest {
+        Some(rest) => {
+            if site_domain.is_empty() {
+                return false;
+            }
+            let host = rest.split(['/', '?', '#']).next().unwrap_or("");
+            let host = host.split(':').next().unwrap_or(host); // 포트 제거
+            let domain = site_domain.to_lowercase();
+            host == domain || host.ends_with(&format!(".{domain}"))
         }
-        return low.contains(&site_domain.to_lowercase());
+        None => true, // 스킴 없는 상대경로는 내부 링크로 취급
     }
-    true
 }
 
 fn norm_kw(s: &str) -> String {
@@ -246,6 +278,15 @@ pub fn missing_sections(spec: &Spec, doc: &str) -> Vec<String> {
 /// 형식·SEO 온페이지 관련 결정론적 지적 사항.
 pub fn format_issues(spec: &Spec, doc: &str) -> Vec<String> {
     let mut issues = Vec::new();
+
+    if front_matter_unclosed(doc) {
+        issues.push(
+            "프론트매터가 닫는 `---`로 끝나지 않음 → title/meta_description을 인식하지 못하고 \
+             문서 전체가 본문으로 처리됨(가독성·헤딩 검사가 오염될 수 있음) → 닫는 `---` 확인"
+                .to_string(),
+        );
+    }
+
     let m = metrics(doc, spec);
 
     if m.title_chars == 0 {
@@ -316,6 +357,47 @@ pub fn format_issues(spec: &Spec, doc: &str) -> Vec<String> {
         issues.push(format!("권장 섹션 '{}' 누락 → 추가", m2));
     }
 
+    let (_, _, body) = parse_front_matter(doc);
+    issues.extend(paragraph_length_issues(body));
+
+    issues
+}
+
+/// 지나치게 긴 문단(스캔 가독성 저해) 지적.
+/// 아이디어 출처: CyberCraftBD/power-seo(MIT) `paragraph-length.ts`(영문 단어수 120~150 기준).
+/// 이 프로젝트는 한국어 등 비영문 콘텐츠도 다루므로 단어수 대신 글자수 기준으로
+/// 재설계했다(임계값 600자는 이 프로젝트에서 임의로 정한 값, power-seo 원 수치를
+/// 그대로 옮긴 게 아니다).
+const PARAGRAPH_CHAR_LIMIT: usize = 600;
+
+fn paragraph_length_issues(body: &str) -> Vec<String> {
+    let mut issues = Vec::new();
+    let mut para = String::new();
+    let flush = |para: &mut String, issues: &mut Vec<String>| {
+        let n = para.chars().count();
+        if n > PARAGRAPH_CHAR_LIMIT {
+            issues.push(format!(
+                "문단이 {n}자로 너무 김(권장 {PARAGRAPH_CHAR_LIMIT}자 이하) → 스캔 가독성을 위해 문단 분리"
+            ));
+        }
+        para.clear();
+    };
+    for line in body.lines() {
+        let t = line.trim();
+        if t.is_empty() || t.starts_with('#') {
+            if !para.trim().is_empty() {
+                flush(&mut para, &mut issues);
+            } else {
+                para.clear();
+            }
+            continue;
+        }
+        para.push_str(t);
+        para.push(' ');
+    }
+    if !para.trim().is_empty() {
+        flush(&mut para, &mut issues);
+    }
     issues
 }
 
@@ -502,5 +584,77 @@ mod tests {
         let doc = "---\ntitle: \"봄 신상 운동화 추천\"\nmeta_description: \"짧음\"\n---\n# 운동화 고르는 법\n오늘은 신발 이야기.";
         let issues = format_issues(&spec, doc);
         assert!(issues.iter().any(|i| i.contains("러닝화")));
+    }
+
+    #[test]
+    fn front_matter_parses_with_crlf() {
+        let doc = "---\r\ntitle: \"안녕\"\r\nmeta_description: \"설명\"\r\n---\r\n# H1\r\n본문";
+        let (t, m, b) = parse_front_matter(doc);
+        assert_eq!(t.as_deref(), Some("안녕"));
+        assert_eq!(m.as_deref(), Some("설명"));
+        assert!(b.contains("H1"), "{b:?}");
+        assert!(!b.contains("title:"), "프론트매터 줄이 본문에 새어나가면 안 됨: {b:?}");
+    }
+
+    #[test]
+    fn front_matter_unclosed_falls_back_and_is_flagged() {
+        let spec = test_spec();
+        let doc = "---\ntitle: X\n본문인데 닫는 --- 가 없음";
+        let (t, m, _) = parse_front_matter(doc);
+        assert!(t.is_none() && m.is_none());
+        let issues = format_issues(&spec, doc);
+        assert!(issues.iter().any(|i| i.contains("닫는")), "{issues:?}");
+    }
+
+    #[test]
+    fn internal_url_spoofing_is_rejected() {
+        assert!(!is_internal_url("https://notexample.com/a", "example.com"));
+        assert!(!is_internal_url("https://example.com.evil.com/a", "example.com"));
+        assert!(is_internal_url("https://example.com/a", "example.com"));
+        assert!(is_internal_url("https://blog.example.com/a", "example.com"));
+        assert!(is_internal_url("/relative/path", "example.com"));
+    }
+
+    #[test]
+    fn readability_returns_none_for_korean() {
+        let body = "# 제목\n\n이것은 한국어로 작성된 본문입니다. 영어 음절 기반 공식이 적용되지 않아야 합니다.";
+        assert!(readability(body).is_none());
+    }
+
+    #[test]
+    fn unquote_handles_bare_value() {
+        let doc = "---\ntitle: 따옴표 없는 제목\nmeta_description: \"설명\"\n---\n# H1\n본문";
+        let (t, _, _) = parse_front_matter(doc);
+        assert_eq!(t.as_deref(), Some("따옴표 없는 제목"));
+    }
+
+    #[test]
+    fn whitespace_only_alt_counts_as_missing() {
+        let links = scan_links("![ ](img.png)");
+        assert_eq!(links.len(), 1);
+        assert!(links[0].label.trim().is_empty());
+    }
+
+    #[test]
+    fn long_paragraph_is_flagged() {
+        let long = "가".repeat(601);
+        let body = format!("# T\n\n{long}\n");
+        let issues = paragraph_length_issues(&body);
+        assert!(issues.iter().any(|i| i.contains("너무 김")), "{issues:?}");
+    }
+
+    #[test]
+    fn short_paragraph_is_not_flagged() {
+        let body = "# T\n\n짧은 문단입니다.\n";
+        assert!(paragraph_length_issues(body).is_empty());
+    }
+
+    #[test]
+    fn internal_and_citation_link_counts() {
+        let spec = test_spec();
+        let doc = "---\ntitle: \"러닝화 고르는 법에 대한 상세 가이드 전체 안내\"\nmeta_description: \"러닝화를 고르는 방법에 대한 아주 상세하고 도움이 되는 설명입니다 충분히 길게\"\n---\n# 러닝화 고르는 법\n러닝화 이야기. [내부1](https://example.com/a) [내부2](/b) [외부](https://other.com/c)\n";
+        let m = metrics(doc, &spec);
+        assert_eq!(m.internal_links, 2);
+        assert_eq!(m.citation_links, 1);
     }
 }
