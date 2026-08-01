@@ -157,20 +157,42 @@ pub fn score_doc(
     anyhow::ensure!(!judges.is_empty(), "채점 모델 없음");
     let rounds = rounds.max(1);
     let schema = judge_schema(spec);
-    let mut results: Vec<JudgeResult> = Vec::new();
-    let mut models: Vec<String> = Vec::new();
 
-    for i in 0..rounds {
-        let llm = &judges[i % judges.len()];
-        let lens = LENSES[i % LENSES.len()];
-        let prompt = build_judge_prompt(spec, doc, lens);
-        let v = llm
-            .json(&prompt, Some(JUDGE_SYSTEM), &schema)
-            .with_context(|| format!("채점 실패 ({label}, round {})", i + 1))?;
-        let jr: JudgeResult = serde_json::from_value(v)
-            .with_context(|| format!("채점 결과 스키마 불일치 ({label})"))?;
+    // 라운드 병렬화: main.rs::par_map이 문서 간(N개 초안 간) 병렬화에 쓰는
+    // std::thread::scope 패턴을 그대로 라운드 단위에 적용한다. `--concurrency`는
+    // 이미 문서 단위 병렬 예산이므로, 여기서는 별도 옵션 없이 단순하게 라운드 수만큼만
+    // 스레드를 스폰한다(§5 백로그: auto-seo의 asyncio.gather 패턴 참고, 단 예산 관리는
+    // 미검증이라 단순 구현으로 제한). 결과는 인덱스 순서를 유지해 반환하므로
+    // trimmed_mean 등 이후 집계 로직은 영향받지 않는다.
+    let round_results: Vec<Result<(JudgeResult, String)>> = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..rounds)
+            .map(|i| {
+                let llm = &judges[i % judges.len()];
+                let lens = LENSES[i % LENSES.len()];
+                let prompt = build_judge_prompt(spec, doc, lens);
+                let schema = &schema;
+                scope.spawn(move || -> Result<(JudgeResult, String)> {
+                    let v = llm
+                        .json(&prompt, Some(JUDGE_SYSTEM), schema)
+                        .with_context(|| format!("채점 실패 ({label}, round {})", i + 1))?;
+                    let jr: JudgeResult = serde_json::from_value(v)
+                        .with_context(|| format!("채점 결과 스키마 불일치 ({label})"))?;
+                    Ok((jr, llm.label()))
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|h| h.join().unwrap_or_else(|_| Err(anyhow::anyhow!("채점 스레드 패닉 ({label})"))))
+            .collect()
+    });
+
+    let mut results: Vec<JudgeResult> = Vec::with_capacity(rounds);
+    let mut models: Vec<String> = Vec::with_capacity(rounds);
+    for r in round_results {
+        let (jr, model) = r?;
         results.push(jr);
-        models.push(llm.label());
+        models.push(model);
     }
 
     let m = checks::metrics(doc, spec);

@@ -191,6 +191,19 @@ Bundled spec: `specs/example-blogpost.toml`. Example content brief: `brief.examp
 - `claude -p` doesn't expose temperature → draft diversity comes only from angle prompts.
 - Output is Markdown (including frontmatter). Converting it to an actual CMS's publish format is out of scope.
 
+## 리서치 기반 개선 반영 (2026-08-01)
+
+`docs/research-and-evidence-survey-2026-08-01.md` §5 백로그 중 다음을 구현했다.
+
+- **다축 reward-hacking canary 추가** (`loop_run.rs`): 기존 길이 인플레이션 canary(분량 +25%인데 점수 +5 미만)는 arXiv:2605.27996("Reward Bias Substitution")이 경고하는 "단일 축 방어"에 해당한다. 이 논문의 핵심 주장 — 편향 축 하나(길이)만 막으면 최적화 압력이 관측되지 않는 다른 축으로 옮겨간다 — 을 근거로, 회차 간 타깃 키워드 등장 횟수(`Metrics::keyword_occurrences`)가 +50% 이상 급증했는데 점수 상승폭이 미미한(+5점 미만) 경우를 감시하는 키워드 밀도 canary를 추가했다. "저품질 인용 링크로 개수만 채우기" 축 대신 이 축을 고른 이유: `checks.rs`에 이미 있는 `norm_kw` 정규화 로직을 재사용할 수 있어 구현이 더 깔끔하고, 링크 품질 판정은 URL을 실제로 fetch해야 해서 아래 "스킵" 항목과 같은 이유로 제외했다.
+- **한국어 가독성 휴리스틱 opt-in 추가** (`checks.rs::korean_readability`, `Metrics::korean_readability_heuristic`): 라틴 문자 비중이 50% 이상이면(Flesch가 계산되는 조건) 계산하지 않는 상호배타 필드로 추가했다. 공식은 `naaaayeonn/AI-literacy-care-Agent`(Python, 문서 `READABILITY_FORMULA.md`)를 참고했으나 코드는 포팅하지 않고 공식만 Rust로 재작성했다: `100 - (평균 어절수/문장 × 1.015) - (평균 음절수/어절 × 8.0) - (전문용어비율 × 35.0)`. **이 공식의 계수는 원 출처 스스로 동료검토된 학술적 근거가 없다고 명시한 경험적 휴리스틱**이므로 Flesch(표준 공식)와 별도 필드로 분리하고, 리포트에는 항상 "⚠️ 검증되지 않은 휴리스틱" 표기를 붙인다.
+- **`score_doc` 라운드 병렬화** (`score.rs`): 문서 1건 채점 시 라운드마다 순차 호출하던 것을, `main.rs::par_map`이 문서 간 병렬화에 쓰는 `std::thread::scope` 패턴을 그대로 라운드 단위에 적용해 병렬화했다. `--concurrency`는 이미 문서 단위 예산이므로 별도 옵션 없이 라운드 수만큼만 스레드를 스폰하는 단순 구현으로 제한했다. 결과는 라운드 인덱스 순서를 유지해 반환하므로 `trimmed_mean` 등 집계 로직은 영향받지 않는다.
+
+다음 두 항목은 리서치 문서가 명시적으로 보류를 결론 낸 항목이라 구현하지 않았다.
+
+- **`pulldown-cmark` 도입**: §3.3이 "현재는 불필요, reference-style 링크·코드스팬 내 `]`·오토링크 버그가 실제로 나오면 그때 재검토"로 조건부 보류를 명시했다. 트리거 조건 미충족 상태라 구현하지 않았다.
+- **인용 URL 실제 fetch 검증(FacTool류)**: §5가 "오프라인/재현성 우선 철학과 상충, 아이디어 단계"로 명시했다. 네트워크 의존성을 추가하는 자체가 이 CLI의 설계 철학과 맞지 않아 구현하지 않았다.
+
 ## Multi-lens review findings applied
 
 Findings CONFIRMED by a review-panel pass (functionality/good_things/tests lenses) were applied:

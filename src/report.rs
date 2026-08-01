@@ -88,6 +88,12 @@ fn details(rows: &[&Scored]) -> String {
             }
             _ => md.push_str(" · Flesch: N/A(비영문 콘텐츠 — README 한계 참고)"),
         }
+        if let Some(kr) = s.metrics.korean_readability_heuristic {
+            md.push_str(&format!(
+                " · 한국어 가독성 휴리스틱 {:.1} (⚠️ 검증되지 않은 휴리스틱 — 학술 근거 없음, README 한계 참고)",
+                kr
+            ));
+        }
         md.push_str("\n\n");
 
         if !s.citation_capped.is_empty() {

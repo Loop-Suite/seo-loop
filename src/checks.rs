@@ -30,10 +30,19 @@ pub struct Metrics {
     pub keyword_in_title: bool,
     pub keyword_in_h1: bool,
     pub keyword_in_intro: bool,
+    /// 본문 전체에서 타깃 키워드가 등장한 횟수(공백/대소문자 정규화 기준).
+    /// 다축 reward-hacking canary(loop_run.rs, §3.4 arXiv:2605.27996)가 회차 간
+    /// 급증 여부를 감시하는 데 사용한다.
+    pub keyword_occurrences: usize,
     /// Flesch Reading Ease / Flesch-Kincaid Grade. 라틴 문자 비중이 낮은(한국어 등)
     /// 문서는 공식이 성립하지 않으므로 None (README 한계 참고).
     pub flesch_reading_ease: Option<f64>,
     pub flesch_kincaid_grade: Option<f64>,
+    /// 한국어 전용 가독성 휴리스틱(opt-in, 라틴 비중 50% 이상이면 None — Flesch와 상호배타적).
+    /// **검증되지 않은 휴리스틱**이다 — 리서치 문서(§3.2)가 인용한 계수(1.015/8.0/35.0)는
+    /// 동료검토된 학술적 근거가 없는 경험적 튜닝값이라고 원 출처 스스로 명시한다.
+    /// Flesch(표준 공식)와 같은 신뢰도로 취급하지 말 것. 리포트에도 반드시 경고 표기와 함께 노출한다.
+    pub korean_readability_heuristic: Option<f64>,
 }
 
 /// 프론트매터(`---`로 감싼 title/meta_description)와 본문을 분리한다.
@@ -219,6 +228,15 @@ fn contains_kw(haystack: &str, keyword: &str) -> bool {
     norm_kw(haystack).contains(&kw)
 }
 
+/// 정규화된 haystack 안에서 keyword가 등장한(겹치지 않는) 횟수.
+fn count_kw_occurrences(haystack: &str, keyword: &str) -> usize {
+    let kw = norm_kw(keyword);
+    if kw.is_empty() {
+        return 0;
+    }
+    norm_kw(haystack).matches(&kw).count()
+}
+
 /// 본문에서 헤딩 줄을 제외한 순수 프로즈만 이어 붙여 첫 `limit`자를 뽑는다(도입부 근사).
 fn intro_text(body: &str, limit: usize) -> String {
     let mut acc = String::new();
@@ -268,6 +286,7 @@ pub fn metrics(doc: &str, spec: &Spec) -> Metrics {
     let intro = intro_text(body, 100);
 
     let lang = readability(body);
+    let korean = korean_readability(body);
 
     Metrics {
         title_chars: title.chars().count(),
@@ -282,8 +301,10 @@ pub fn metrics(doc: &str, spec: &Spec) -> Metrics {
         keyword_in_title: contains_kw(&title, &spec.keyword),
         keyword_in_h1: contains_kw(&h1_text, &spec.keyword),
         keyword_in_intro: contains_kw(&intro, &spec.keyword),
+        keyword_occurrences: count_kw_occurrences(body, &spec.keyword),
         flesch_reading_ease: lang.map(|r| r.0),
         flesch_kincaid_grade: lang.map(|r| r.1),
+        korean_readability_heuristic: korean,
     }
 }
 
@@ -554,6 +575,81 @@ fn readability(body: &str) -> Option<(f64, f64)> {
     Some(((ease * 10.0).round() / 10.0, (grade * 10.0).round() / 10.0))
 }
 
+// ---- 가독성(한국어, opt-in) ----------------------------------------------
+// 리서치 문서 §3.2가 조사한 `naaaayeonn/AI-literacy-care-Agent`(Python, ★3,
+// 문서 `READABILITY_FORMULA.md`)의 공식만 참고해 Rust로 재작성(코드 포팅 아님).
+// 공식: 100 - (평균 어절수/문장 × 1.015) - (평균 음절수/어절 × 8.0) - (전문용어비율 × 35.0)
+//
+// **중요**: 이 공식의 계수(1.015/8.0/35.0)는 Flesch처럼 표준화·동료검토된 공식이 아니라
+// 원 출처 문서 스스로 "구어체/신조어 미반영, 문맥 무시" 한계를 자인한 경험적 휴리스틱이다.
+// Flesch(영문)와 절대 같은 신뢰도로 취급하면 안 되며, 반드시 별도 필드로 노출하고
+// 리포트에 "검증되지 않은 휴리스틱" 경고를 붙인다(README/Metrics 문서 참고).
+//
+// 라틴 문자 비중 50% 이상이면 계산하지 않는다(readability()의 Flesch 계산과 상호배타적).
+
+/// 문장 수: `.`/`!`/`?` 뒤에 공백이 오거나 문서 끝인 지점을 문장 경계로 센다.
+/// (`다.`/`요.`는 이미 `.`로 끝나므로 별도 처리 불필요)
+fn count_korean_sentences(text: &str) -> usize {
+    let chars: Vec<char> = text.chars().collect();
+    let n = chars.len();
+    let mut count = 0usize;
+    for i in 0..n {
+        if matches!(chars[i], '.' | '!' | '?') && (i + 1 >= n || chars[i + 1].is_whitespace()) {
+            count += 1;
+        }
+    }
+    count
+}
+
+/// 어절이 "전문용어"인지: 영어 3자 이상 단어(전체가 ASCII 알파벳)이거나,
+/// 한국어 전문용어 접미사(화/율/성/도/적/론/법/형/식/계/기/학)로 끝나면 true.
+/// 어절 앞뒤의 구두점(마침표 등)은 판정 전에 잘라낸다.
+fn is_technical_word(word: &str) -> bool {
+    const TECH_SUFFIXES: [char; 12] = ['화', '율', '성', '도', '적', '론', '법', '형', '식', '계', '기', '학'];
+    let trimmed = word.trim_matches(|c: char| !c.is_alphanumeric() && !('가'..='힣').contains(&c));
+    if trimmed.is_empty() {
+        return false;
+    }
+    let ascii_letters = trimmed.chars().filter(|c| c.is_ascii_alphabetic()).count();
+    if ascii_letters >= 3 && ascii_letters == trimmed.chars().count() {
+        return true; // 영어 3자 이상 단어 (예: LLM, API)
+    }
+    trimmed.chars().last().map(|c| TECH_SUFFIXES.contains(&c)).unwrap_or(false)
+}
+
+fn korean_readability(body: &str) -> Option<f64> {
+    let prose = strip_markdown_to_prose(body);
+    let total_chars = prose.chars().filter(|c| !c.is_whitespace()).count();
+    if total_chars == 0 {
+        return None;
+    }
+    let latin = prose.chars().filter(|c| c.is_ascii_alphabetic()).count();
+    if (latin as f64 / total_chars as f64) >= 0.5 {
+        return None; // 라틴 문자 비중 높음 → Flesch 쪽 담당(상호배타적)
+    }
+
+    let words: Vec<&str> = prose.split_whitespace().collect();
+    if words.is_empty() {
+        return None;
+    }
+    let word_count = words.len();
+
+    let sentence_count = count_korean_sentences(&prose).max(1);
+    let avg_words_per_sentence = word_count as f64 / sentence_count as f64;
+
+    let syllables = prose.chars().filter(|c| ('가'..='힣').contains(c)).count();
+    let avg_syllables_per_word = syllables as f64 / word_count as f64;
+
+    let tech_count = words.iter().filter(|w| is_technical_word(w)).count();
+    let technical_term_ratio = tech_count as f64 / word_count as f64;
+
+    let score = 100.0
+        - (avg_words_per_sentence * 1.015)
+        - (avg_syllables_per_word * 8.0)
+        - (technical_term_ratio * 35.0);
+    Some((score * 10.0).round() / 10.0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -665,6 +761,38 @@ mod tests {
     fn readability_returns_none_for_korean() {
         let body = "# 제목\n\n이것은 한국어로 작성된 본문입니다. 영어 음절 기반 공식이 적용되지 않아야 합니다.";
         assert!(readability(body).is_none());
+    }
+
+    #[test]
+    fn korean_readability_computes_expected_score() {
+        // 2문장 × 2어절, 어절당 3음절, 전문용어 0개인 문서로 계수를 직접 검산한다.
+        // avg_words_per_sentence=2.0, avg_syllables_per_word=3.0, technical_term_ratio=0.0
+        // → 100 - 2.0*1.015 - 3.0*8.0 - 0 = 73.97 → 반올림 74.0
+        let body = "가나다 라마바. 사아자 차카타.";
+        let score = korean_readability(body).expect("한국어 문서는 Some이어야 함");
+        assert!((score - 74.0).abs() < 0.1, "score={score}");
+    }
+
+    #[test]
+    fn korean_readability_none_for_latin_dominant_text() {
+        // 라틴 문자 비중이 50% 이상이면 Flesch와 상호배타적이므로 None이어야 한다.
+        let body = "This is a fully English sentence used to test the exclusivity rule.";
+        assert!(korean_readability(body).is_none());
+    }
+
+    #[test]
+    fn korean_readability_field_matches_flesch_exclusivity_in_metrics() {
+        let spec = test_spec();
+        let doc = "---\ntitle: \"러닝화 고르는 법에 대한 상세 가이드 전체 안내\"\nmeta_description: \"러닝화를 고르는 방법에 대한 아주 상세하고 도움이 되는 설명입니다 충분히 길게\"\n---\n# 러닝화 고르는 법\n러닝화를 고를 때는 발볼과 쿠셔닝을 함께 확인해야 합니다. 전문성 있는 선택이 중요합니다.\n";
+        let m = metrics(doc, &spec);
+        assert!(m.flesch_reading_ease.is_none());
+        assert!(m.korean_readability_heuristic.is_some());
+    }
+
+    #[test]
+    fn keyword_occurrence_count() {
+        let body = "러닝화 이야기. 러닝화는 좋다. RunningShoe와 러닝화.";
+        assert_eq!(count_kw_occurrences(body, "러닝화"), 3);
     }
 
     #[test]

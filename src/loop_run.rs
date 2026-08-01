@@ -123,6 +123,34 @@ pub fn run(
             d_score
         ));
     }
+
+    // 키워드 밀도 canary: 다축 reward-hacking 방지(§3.4, arXiv:2605.27996
+    // "Reward Bias Substitution: Single-Axis Bias Mitigations Redirect Optimization Pressure").
+    // 이 논문의 핵심 주장은 "편향 축 하나(길이)만 억제하면 최적화 압력이 관측되지 않는
+    // 다른 축으로 옮겨간다"는 것이다 — 위 길이 canary는 정확히 그 단일 축 방어에 해당하므로,
+    // 최소 1개 축을 더 감시한다.
+    //
+    // "citation_links 개수 대비 링크 밀도가 부자연스러운 경우" 대신 "회차 간 타깃 키워드
+    // 등장 횟수 급증"을 선택한 이유: checks.rs에 이미 norm_kw/contains_kw로 키워드 정규화
+    // 로직이 있어 재사용만 하면 되고(구현이 더 깔끔함), 반대로 "저품질 링크"를 가려내려면
+    // URL을 실제로 fetch해 신뢰도를 판정해야 하는데 이는 §5 백로그의 FacTool류 항목과
+    // 동일한 이유(오프라인/재현성 우선 철학과 상충, 네트워크 의존성 추가)로 이번 범위에서
+    // 명시적으로 제외했다.
+    let d_kw = best_score.metrics.keyword_occurrences as f64 - first.metrics.keyword_occurrences as f64;
+    if first.metrics.keyword_occurrences > 0 {
+        let kw_growth = d_kw / first.metrics.keyword_occurrences as f64;
+        if kw_growth > 0.5 && d_score < 5.0 {
+            warnings.push(format!(
+                "키워드 밀도 canary: '{}' 등장 횟수 {}→{} (+{:.0}%) 인데 점수는 +{:.1}점 → 키워드 스터핑 의심",
+                spec.keyword,
+                first.metrics.keyword_occurrences,
+                best_score.metrics.keyword_occurrences,
+                kw_growth * 100.0,
+                d_score
+            ));
+        }
+    }
+
     if best_i + 1 < history.len() {
         warnings.push(format!(
             "마지막 회차({:.1}점)가 최고점이 아님 → best.md는 iter{:02}",
