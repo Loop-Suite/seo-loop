@@ -1,0 +1,59 @@
+name = "블로그 글 (예시 스펙)"
+context = """
+중소 이커머스 브랜드의 자사몰 블로그. 독자는 구매를 고민 중인 잠재 고객.
+전문 용어보다 실사용 경험과 구체적 수치를 우선한다.
+"""
+keyword = "러닝화 추천"
+scoring_source = "일반적인 온페이지 SEO 관행(title/meta 길이, 헤딩 계층, E-E-A-T) — 특정 공고·플랫폼 배점표 아님. 사이트별로 실제 랭킹 요인 가중치는 다를 수 있음."
+site_domain = "example.com"
+
+title_min = 50
+title_max = 60
+meta_min = 120
+meta_max = 160
+internal_links_min = 3
+internal_links_max = 5
+min_citations = 1
+
+angles = [
+  "단계별 how-to 가이드 형식으로 실행 순서를 전면에 세운다.",
+  "리스트형(listicle)으로 비교 항목을 나열해 훑어보기 쉽게 만든다.",
+  "실제 착화 후기·데이터 중심으로 신뢰도를 전면에 세운다.",
+]
+
+[[sections]]
+id = "intro"
+title = "도입부"
+guide = "누구를 위한 글인지, 어떤 문제를 해결하는지 첫 문단에 명시. 키워드를 자연스럽게 포함."
+required = true
+
+[[sections]]
+id = "faq"
+title = "자주 묻는 질문"
+guide = "구매 전 흔한 궁금증 3~5개를 Q&A로 정리(FAQ 스니펫 노출 목적)."
+required = false
+
+[[criteria]]
+id = "search_intent_match"
+name = "검색 의도 부합도"
+weight = 0.30
+guide = "정보성/상업성/거래성 중 이 키워드의 실제 검색 의도에 맞는 내용을 다루는가. 검색자가 원하는 답을 빠르게 주는가."
+
+[[criteria]]
+id = "keyword_naturalness"
+name = "키워드 자연스러움"
+weight = 0.20
+guide = "키워드와 관련어가 문맥상 자연스럽게 쓰였는가. 억지 반복(키워드 스터핑)이나 어색한 삽입이 없는가."
+
+[[criteria]]
+id = "eeat_signals"
+name = "E-E-A-T 신호"
+weight = 0.25
+guide = "1인칭 경험(사용/착용/테스트 후기), 구체적 수치, 전문성 있는 설명, 신뢰할 수 있는 출처 인용이 있는가."
+citation_required = true
+
+[[criteria]]
+id = "structure_readability"
+name = "구조·가독성"
+weight = 0.25
+guide = "헤딩 계층이 논리적인가, 문단이 스캔하기 쉬운가, 리스트·소제목을 적절히 활용했는가."

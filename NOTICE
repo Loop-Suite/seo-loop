@@ -1,0 +1,28 @@
+seo-loop
+Copyright 2026 kimdzhekhon
+
+이 제품은 Apache License, Version 2.0 하에 배포된다.
+
+---
+
+포함된 서드파티 로직 (재작성, 코드 복붙 없음)
+---------------------------------------------
+
+src/checks.rs의 가독성(Flesch Reading Ease / Flesch-Kincaid Grade) 계산 로직은 아래
+오픈소스 프로젝트의 알고리즘 구조(마크다운 스트리핑 → 문장/단어 분리 → 음절수 추정 →
+Flesch 공식 적용)를 참고해 Rust로 새로 작성했다. 원본 코드를 복사하지 않았으며,
+표준 Flesch-Kincaid 공식과 근사 음절 카운팅 휴리스틱만 이식했다.
+
+- 프로젝트: BlogPilot Open Source AI SEO Content Studio
+  (IamRamgarhia/BlogPilot-Open-Source-AI-SEO-Content-Studio)
+- 파일: src/lib/seo/readability.ts
+- 라이선스: MIT
+- URL: https://github.com/IamRamgarhia/BlogPilot-Open-Source-AI-SEO-Content-Studio
+
+같은 저장소의 src/lib/methodologies/eeat-checklist.md(E-E-A-T 체크리스트, 저작권
+보호 대상이 아닌 일반 방법론 서술)는 checks.rs의 출처 링크 검사 및 score.rs의
+채점 루브릭 안내 문구를 설계할 때 아이디어 참고용으로만 활용했다(코드 없음, 문구 재작성).
+
+같은 저장소의 src/lib/seo/tfidf.ts(TF-IDF 키워드 추출)는 검토했으나 포팅하지 않았다.
+경쟁사 상위 노출 문서 코퍼스가 필요한 로직인데, 본 CLI는 단일 문서 생성/채점 도구라
+비교 코퍼스를 확보할 방법이 없어 이식 대상에서 제외했다(README 한계 참고).
