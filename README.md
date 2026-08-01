@@ -15,6 +15,21 @@ LLM 백엔드는 Claude Code CLI(`claude -p`) 서브프로세스. 별도 API 키
 `seo-reference-library`를, 새 블로그 글/랜딩페이지 카피 초안이 필요하면 `seo-loop`를 쓴다. `seo-reference-library`가
 정리한 체크리스트를 `specs/*.toml`의 `guide`/`context`에 옮겨 채점 기준을 보강하는 식으로 함께 쓸 수 있다.
 
+## Pipeline
+
+```mermaid
+flowchart LR
+    A["brief + spec"] --> B["generate.rs: N angle-varied drafts"]
+    B --> C["checks.rs: title/meta length, heading hierarchy,<br/>keyword placement, Flesch readability, link/citation counts"]
+    C --> D["score.rs: LLM rubric<br/>multiple judge models/rounds"]
+    D --> E["trimmed-mean aggregation per criterion"]
+    E --> F{"loop mode?"}
+    F -->|"gen"| G["best.md + ranked runs"]
+    F -->|"loop, target score"| H["feedback → regenerate<br/>until target / max-iter"]
+    H --> B
+    G --> I["held-out gate model re-scores<br/>first vs. best (reward-hacking check)"]
+```
+
 ## 요구사항
 
 - Rust 1.70+
