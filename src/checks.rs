@@ -126,16 +126,22 @@ pub struct MdLink {
 }
 
 /// 마크다운 이미지(`![alt](url)`)/링크(`[text](url)`)를 정규식 없이 수동 스캔한다.
+/// 라벨 안에 중첩된 `[...]`(예: `[a[b]c](url)`)를 depth로 추적해 짝이 맞는 `]`를 찾고,
+/// `\[`/`\]`(이스케이프)는 괄호로 세지 않는다.
 pub fn scan_links(text: &str) -> Vec<MdLink> {
     let chars: Vec<char> = text.chars().collect();
     let n = chars.len();
     let mut out = Vec::new();
     let mut i = 0usize;
     while i < n {
+        if chars[i] == '\\' && i + 1 < n {
+            i += 2;
+            continue;
+        }
         let is_image = chars[i] == '!' && i + 1 < n && chars[i + 1] == '[';
         let bracket_start = if is_image { i + 1 } else { i };
         if chars[i] == '[' || is_image {
-            if let Some(close) = find_char(&chars, bracket_start + 1, ']') {
+            if let Some(close) = find_matching_bracket_close(&chars, bracket_start + 1) {
                 if close + 1 < n && chars[close + 1] == '(' {
                     if let Some(paren_close) = find_char(&chars, close + 2, ')') {
                         let label: String = chars[bracket_start + 1..close].iter().collect();
@@ -154,6 +160,31 @@ pub fn scan_links(text: &str) -> Vec<MdLink> {
 
 fn find_char(chars: &[char], from: usize, target: char) -> Option<usize> {
     (from..chars.len()).find(|&j| chars[j] == target)
+}
+
+/// `[` 바로 다음 위치(`from`)부터 중첩 `[...]`를 depth로 추적하며 짝이 맞는 `]`를 찾는다.
+/// `\]`/`\[`는 괄호로 세지 않는다(이스케이프).
+fn find_matching_bracket_close(chars: &[char], from: usize) -> Option<usize> {
+    let mut depth = 1i32;
+    let mut j = from;
+    while j < chars.len() {
+        if chars[j] == '\\' && j + 1 < chars.len() {
+            j += 2;
+            continue;
+        }
+        match chars[j] {
+            '[' => depth += 1,
+            ']' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(j);
+                }
+            }
+            _ => {}
+        }
+        j += 1;
+    }
+    None
 }
 
 /// 절대 URL의 호스트가 `site_domain`과 정확히 같거나 그 서브도메인인지 판정한다.
@@ -576,6 +607,21 @@ mod tests {
         let links = scan_links("본문 ![대체텍스트](img.png) 그리고 [내부](/a) [외부](https://ex.com)");
         assert_eq!(links.len(), 3);
         assert!(links[0].is_image);
+    }
+
+    #[test]
+    fn link_scan_handles_nested_brackets_in_label() {
+        let links = scan_links("[a[b]c](https://ex.com)");
+        assert_eq!(links.len(), 1, "{links:?}");
+        assert_eq!(links[0].label, "a[b]c");
+        assert_eq!(links[0].url, "https://ex.com");
+    }
+
+    #[test]
+    fn link_scan_ignores_escaped_brackets() {
+        let links = scan_links(r"\[이건 링크 아님\](url) 그리고 [진짜](https://ex.com)");
+        assert_eq!(links.len(), 1, "{links:?}");
+        assert_eq!(links[0].url, "https://ex.com");
     }
 
     #[test]

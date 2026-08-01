@@ -323,7 +323,10 @@ where
         let chunk: Vec<T> = rest.drain(..take).collect();
         let results: Vec<Result<R>> = std::thread::scope(|s| {
             let handles: Vec<_> = chunk.into_iter().map(|item| s.spawn(|| f(item))).collect();
-            handles.into_iter().map(|h| h.join().unwrap()).collect()
+            handles
+                .into_iter()
+                .map(|h| h.join().unwrap_or_else(|_| Err(anyhow::anyhow!("작업 스레드 패닉"))))
+                .collect()
         });
         for r in results {
             match r {
