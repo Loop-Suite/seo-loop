@@ -1,93 +1,171 @@
 # seo-loop
 
-A Rust CLI for SEO content (blog posts/landing-page copy): **generate N drafts → deterministic rule checks → LLM rubric scoring → feedback-driven regeneration**.
-LLM backend is the Claude Code CLI (`claude -p`) as a subprocess — no separate API key required.
+A Rust CLI that generates SEO content (blog posts, landing-page copy) with an LLM, checks it against deterministic on-page rules, scores it with an LLM rubric panel, and — optionally — regenerates it in a closed loop toward a target score.
 
-Ports the same "generate N → rule-check → de-anchoring rubric score → regenerate" architecture as [Loop-Suite/bizplan-loop](https://github.com/Loop-Suite/bizplan-loop) (a business-plan generation tool) into SEO copy generation.
+It uses the **Claude Code CLI** (`claude -p`) as a subprocess for every LLM call, so it needs no separate API key — it authenticates however `claude` already does on your machine (subscription login or API key).
 
-## How this differs from the `seo-reference-library` skill
+The architecture ports the same "generate N → deterministic checks → de-anchored rubric score → regenerate" pattern used by [Loop-Suite/bizplan-loop](https://github.com/Loop-Suite/bizplan-loop) (a business-plan generator) into SEO copywriting. Primary sources for the scoring methodology (de-anchoring, trimmed-mean aggregation, held-out gate models, length canaries) live in that repo's `DESIGN.md`; this README documents how the same ideas are implemented here, plus two things bizplan-loop doesn't have: a deterministic citation-count hard cap and multi-axis reward-hacking canaries.
 
-This CLI is **complementary, not overlapping**, with the `seo-reference-library` Claude Code skill some users already have. `seo-reference-library` is an **evidence-based audit** tool — it measures an existing site and produces SEO design patterns/checklists/scores; it diagnoses a page that already exists. `seo-loop`, on the other hand, **generates new content** and scores/regenerates it toward a target score in a loop — it produces a piece of writing that doesn't exist yet. Use `seo-reference-library` when you need an audit, and `seo-loop` when you need a new blog-post/landing-page copy draft. You can use them together: move the checklist that `seo-reference-library` produced into `specs/*.toml`'s `guide`/`context` fields to strengthen the scoring criteria.
+## Relationship to the `seo-reference-library` skill
 
-## Pipeline
+`seo-loop` is complementary to, not a replacement for, the `seo-reference-library` Claude Code skill: that skill **audits a page that already exists** (evidence-based measurement → design patterns/checklists/scores). `seo-loop` **writes a page that doesn't exist yet** and scores/regenerates it toward a target. A natural combination: run `seo-reference-library` on a competitor or your own site, then paste the resulting checklist into a `specs/*.toml` file's `guide`/`context` fields to sharpen `seo-loop`'s rubric.
 
-### Overview
-
-```mermaid
-flowchart LR
-    A["brief + spec"] --> B["generate.rs: N angle-varied drafts"]
-    B --> C["checks.rs: title/meta length, heading hierarchy,<br/>keyword placement, Flesch readability, link/citation counts"]
-    C --> D["score.rs: LLM rubric<br/>multiple judge models/rounds"]
-    D --> E["trimmed-mean aggregation per criterion"]
-    E --> F{"loop mode?"}
-    F -->|"gen"| G["best.md + ranked runs"]
-    F -->|"loop, target score"| H["feedback → regenerate<br/>until target / max-iter"]
-    H --> B
-    G --> I["held-out gate model re-scores<br/>first vs. best (reward-hacking check)"]
-```
-
-### CLI modes
-
-```mermaid
-flowchart TB
-    subgraph gen["seo gen"]
-        G1["N drafts, angle-varied prompts"] --> G2["checks.rs + score.rs"] --> G3["best.md + ranked runs/*.md"]
-    end
-    subgraph score["seo score"]
-        S1["existing draft.md"] --> S2["checks.rs + score.rs"] --> S3["report only, no regeneration"]
-    end
-    subgraph loopmode["seo loop"]
-        L1["brief"] --> L2["gen round"] --> L3{"target reached<br/>or max-iter hit?"}
-        L3 -->|"no"| L4["feedback_text() → regenerate"] --> L2
-        L3 -->|"yes"| L5["held-out gate model<br/>re-scores first vs. best"]
-    end
-```
-
-### Deterministic checks detail
+## Pipeline overview
 
 ```mermaid
 flowchart LR
-    A["frontmatter + markdown body"] --> B["parse_front_matter()<br/>(split('\\n')-based offsets, CRLF-safe)"]
-    B --> C["headings() / scan_links()<br/>(bracket-depth aware, no regex)"]
-    C --> D["title/meta length, H1 count,<br/>heading-skip, alt text, link counts"]
-    C --> E["readability(): Flesch Reading Ease /<br/>Flesch-Kincaid Grade (Latin-script only)"]
-    C --> F["paragraph_length_issues()"]
-    D --> G["citation count < min_citations<br/>→ hard 60-point cap in score.rs"]
-    G --> H["format_issues(): merged into<br/>one deterministic issue list"]
-    E --> H
-    F --> H
+    Brief["brief.md<br/>content brief"] --> Gen
+    Spec["spec.toml<br/>rubric + constraints"] --> Gen["generate.rs<br/>generate() / revise()"]
+    Gen -- "claude -p subprocess" --> Draft["draft.md<br/>frontmatter + Markdown"]
+    Draft --> Checks["checks.rs<br/>deterministic on-page checks"]
+    Draft --> Judges["score.rs<br/>LLM rubric judge panel"]
+    Checks --> Agg["score.rs<br/>trimmed-mean aggregation<br/>+ citation hard cap"]
+    Judges --> Agg
+    Agg --> Report["report.rs<br/>report.md / results.jsonl"]
+    Agg --> Decision{"mode?"}
+    Decision -- "gen" --> Ranked["ranked candNN.md + best.md"]
+    Decision -- "score" --> ReportOnly["report only, no regeneration"]
+    Decision -- "loop, below target" --> Feedback["feedback_text + weak_points<br/>-> generate::revise()"]
+    Feedback --> Gen
+    Decision -- "loop, target or max-iter hit" --> Gate["gate-model re-score:<br/>first draft vs best draft"]
 ```
 
-## Requirements
+## Three CLI modes
 
-- Rust 1.70+
-- `claude` CLI installed and logged in (use `--claude-bin` if not on PATH)
-
-## Build
+The binary is `seo` (built from `src/main.rs`, `Cargo.toml`'s `[[bin]] name = "seo"`).
 
 ```bash
-cargo build --release   # target/release/seo
+cargo build --release   # -> target/release/seo
 ```
 
-## Three modes
-
 ```bash
-# 1) generate N drafts + score + rank
+# 1) generate N drafts, check + score, rank them
 seo --model sonnet --judge-model haiku \
-  gen --spec specs/example-blogpost.toml --brief brief.example.md -n 6 --rounds 2 --concurrency 3 --out runs/blog
+  gen --spec specs/example-blogpost.toml --brief brief.example.md \
+  -n 6 --rounds 2 --concurrency 3 --out runs/blog
 
-# 2) score an existing draft only
+# 2) score an existing draft only, no generation
 seo --judge-model sonnet,haiku \
   score --spec specs/example-blogpost.toml --input draft.md --rounds 3 --out runs/check
 
-# 3) self-improvement loop toward a target score (+ held-out check)
+# 3) self-improvement loop toward a target score, with a held-out sanity check
 seo --model opus --judge-model sonnet --gate-model haiku \
-  loop --spec specs/example-blogpost.toml --brief brief.example.md --target 85 --max-iter 4 --out runs/loop
+  loop --spec specs/example-blogpost.toml --brief brief.example.md \
+  --target 85 --max-iter 4 --out runs/loop
 ```
 
-## Backend behavior
+Global flags (apply to all three subcommands, defined once on `Cli` in `main.rs`):
 
-The invocation always takes this shape (verified against `claude --help`).
+| Flag | Default | Meaning |
+|---|---|---|
+| `--claude-bin` | `claude` | path to the Claude Code executable |
+| `--model` | none | generation model (`opus`/`sonnet`/`haiku`/`fable` or a full model ID) |
+| `--judge-model` | none | scoring model(s); comma-separated list rotates as a panel (e.g. `sonnet,haiku`) |
+| `--retries` | `2` | retries per LLM call |
+| `--timeout-secs` | `600` | timeout per LLM call |
+| `--max-budget-usd` | none | forwarded to `claude --max-budget-usd` |
+| `--load-context` | off | load the working directory's CLAUDE.md/skills/plugins/hooks (default is `--safe-mode`, which blocks this) |
+| `--verbose` | off | print retry/failure logs |
+
+If `--judge-model` is omitted, the CLI prints a warning and reuses `--model` for scoring — same-model self-scoring skews generous.
+
+### `gen`
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--spec` | required | path to `specs/*.toml` |
+| `--brief` | required | content brief file (md/txt) |
+| `-n, --count` | `3` | number of angle-varied drafts |
+| `--out` | `runs` | output directory |
+| `--rounds` (alias `--judges`) | `2` | scoring rounds per document |
+| `--concurrency` | `1` | parallel documents in flight |
+| `--no-score` | off | generate only, skip scoring |
+
+### `score`
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--spec` | required | path to `specs/*.toml` |
+| `--input` | required | a single file or a directory of `*.md`/`*.txt` |
+| `--out` | `runs` | output directory |
+| `--rounds` (alias `--judges`) | `2` | scoring rounds per document |
+| `--concurrency` | `1` | parallel documents in flight |
+
+### `loop`
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--spec` / `--brief` | required | same as `gen` |
+| `--out` | `runs` | output directory |
+| `--target` | `85.0` | target total score (0-100); loop stops early once reached |
+| `--max-iter` | `4` | max iterations (most gains happen in the first 1-2 rounds per the cited literature) |
+| `--rounds` (alias `--judges`) | `2` | scoring rounds per iteration |
+| `--min-delta` | `2.0` | improvement below this counts as stalled |
+| `--patience` | `2` | consecutive stalls before early stop |
+| `--angle` | spec default | starting content angle |
+| `--gate-model` | none | model that never scores inside the loop; re-scores only the first and best drafts afterward |
+
+## CLI execution flow (`seo gen`)
+
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant CLI as main.rs
+    participant G as generate.rs
+    participant C as claude CLI subprocess
+    participant K as checks.rs
+    participant S as score.rs judge panel
+    participant R as report.rs
+
+    U->>CLI: seo --model sonnet --judge-model haiku gen --spec .. --brief .. -n 6 --rounds 2
+    CLI->>G: angles_for(spec, n)
+    loop N drafts, par_map with --concurrency
+        CLI->>G: generate(llm, spec, brief, angle)
+        G->>C: claude -p --output-format json --safe-mode --tools "" --model sonnet
+        C-->>G: JSON {result, total_cost_usd}
+        G-->>CLI: draft written to out/candNN.md
+    end
+    CLI->>S: score_doc(judges, spec, draft, rounds)
+    loop rounds, round-robin lens and judge model
+        S->>C: claude -p --json-schema rubric-schema.json --model haiku
+        C-->>S: structured_output JSON
+    end
+    S->>K: metrics(doc, spec) and format_issues(spec, doc)
+    K-->>S: deterministic Metrics + issue list
+    S-->>CLI: Scored { total, per_criterion, citation_capped, spread }
+    CLI->>R: write_report(out_dir, spec, scored)
+    R-->>U: runs/report.md, runs/results.jsonl, ranked candNN.md, best.md
+```
+
+## Module map
+
+```mermaid
+flowchart TB
+    main["main.rs<br/>clap Cli / Cmd::Gen,Score,Loop<br/>par_map() thread-scope fan-out"]
+    spec["spec.rs<br/>Spec::load() from TOML<br/>Criterion, Section"]
+    generate["generate.rs<br/>build_prompt / build_revise_prompt<br/>angles_for()"]
+    checks["checks.rs<br/>parse_front_matter, headings, scan_links,<br/>metrics(), format_issues(), readability()"]
+    llm["llm.rs<br/>Llm::text() / Llm::json()<br/>spawns `claude -p` subprocess"]
+    score["score.rs<br/>score_doc(), trimmed_mean(),<br/>citation hard cap"]
+    loop_run["loop_run.rs<br/>run(): generate/score/revise loop<br/>+ reward-hacking canaries"]
+    report["report.rs<br/>write_report() / write_loop_report()<br/>append_jsonl()"]
+
+    main --> spec
+    main --> generate
+    main --> score
+    main --> loop_run
+    main --> report
+    generate --> llm
+    score --> checks
+    score --> llm
+    loop_run --> generate
+    loop_run --> score
+    loop_run --> report
+```
+
+## Backend: how it drives the `claude` CLI
+
+Every LLM call in `llm.rs` shells out with this shape (comments in the source say it was verified against `claude --help`):
 
 ```
 claude -p --output-format json --safe-mode --no-session-persistence --tools "" \
@@ -96,71 +174,147 @@ claude -p --output-format json --safe-mode --no-session-persistence --tools "" \
 
 | Flag | Reason |
 |---|---|
-| `--safe-mode` | Don't load the working directory's CLAUDE.md/skills/plugins/hooks/MCP → reproducibility. Disable with `--load-context` |
-| `--tools ""` | Fully disables built-in tools (Read/Edit/Write/Bash) → pure text generation, no file access |
-| `--no-session-persistence` | No session file written. Avoids contention under parallel execution |
-| `--json-schema` | Forces the scoring result into a schema. A validated object arrives in the response's `structured_output` |
-| `--output-format json` | Collects `result` / `structured_output` / `total_cost_usd`, printed as a running total at the end |
+| `--safe-mode` | Skip the working directory's CLAUDE.md/skills/plugins/hooks/MCP for reproducibility (drop it with `--load-context`) |
+| `--tools ""` | Disables all built-in tools (Read/Edit/Write/Bash) — pure text generation, no file access |
+| `--no-session-persistence` | No session file written, avoiding contention under `--concurrency > 1` |
+| `--json-schema` | Forces the scoring reply into a schema; the validated object comes back as `structured_output` |
+| `--output-format json` | Lets the CLI read `result` / `structured_output` / `total_cost_usd` (accumulated and printed at the end) |
 
-`--bare` is not used — it doesn't read OAuth/keychain and only accepts `ANTHROPIC_API_KEY`, which breaks auth for subscription-login users.
+`--bare` is deliberately not used: it only reads `ANTHROPIC_API_KEY` and skips OAuth/keychain, which breaks auth for subscription-login users.
 
-The prompt is passed over stdin; writing stdin and reading stdout/stderr happen on separate threads simultaneously (to avoid deadlock from a saturated pipe buffer).
+Prompt goes over stdin; a separate thread writes stdin while others read stdout/stderr concurrently, to avoid a deadlock if the pipe buffer fills before the child process starts draining it.
+
+If the JSON reply's `structured_output` is missing, `llm::extract_json()` falls back to pulling a JSON object out of the raw text (handles a stray code fence or trailing commentary).
+
+## Deterministic checks vs. LLM judgment
+
+```mermaid
+flowchart TB
+    subgraph Deterministic["Deterministic — checks.rs, plain Rust, no LLM"]
+        D1["title / meta_description char-count range"]
+        D2["exactly one H1, no heading-level skip"]
+        D3["keyword present in title / H1 / first 100 chars of intro"]
+        D4["image alt text present"]
+        D5["internal-link count within spec range"]
+        D6["citation-link count vs min_citations"]
+        D7["Flesch Reading Ease / Grade, Latin-script only"]
+        D8["Korean readability heuristic, opt-in, unvalidated"]
+        D9["paragraph length under 600 chars"]
+    end
+    subgraph Judgment["LLM rubric — score.rs judge panel, 0-100 per criterion"]
+        J1["search_intent_match, weight 0.30"]
+        J2["keyword_naturalness, weight 0.20"]
+        J3["eeat_signals, weight 0.25"]
+        J4["structure_readability, weight 0.25"]
+    end
+    D6 -- "citation_links below min_citations" --> Cap["hard 60-point cap<br/>enforced in score.rs code,<br/>not a prompt instruction"]
+    Cap --> J3
+    D1 & D2 & D3 & D4 & D5 & D7 & D8 & D9 --> Issues["format_issues() list<br/>shown in report + fed back<br/>as loop-mode feedback"]
+    J1 & J2 & J3 & J4 --> Total["weighted total =<br/>sum(trimmed_mean(criterion) x weight) / sum(weight)"]
+```
+
+The rubric prompt (`score.rs::build_judge_prompt`) explicitly tells the judge model to ignore title/meta length, heading hierarchy, link counts, and alt text — those are covered deterministically — and to score only content quality and persuasiveness.
+
+## Judge panel: independent scoring, not a debate
+
+`score_doc()` runs `--rounds` calls, each pinned to `judges[i % judges.len()]` (round-robin across `--judge-model`) and to `LENSES[i % LENSES.len()]` (six fixed personas: intent/completeness, keyword-stuffing scrutiny, E-E-A-T/citations, 3-10-second scan readability, competitive differentiation, on-page CTR contribution). Before scoring, each call must first write `winning_conditions` — what a top-ranking page for this intent would need — *before* seeing the rubric applied to the document, to reduce anchoring on the specific draft. Every criterion score also requires a verbatim quote (`evidence`) and a `why_not_higher` justification; no quote caps that criterion at 60.
+
+Worth being precise about: **there is no cross-judge discourse here.** Each round is an independent JSON call with no visibility into any other round's verdict — the source comments in `score.rs` note explicitly that repeating the *same* model doesn't produce independent samples (correlated error), and that real independence comes from mixing different models in `--judge-model`. The only aggregation is statistical (trimmed mean, spread) plus, in `loop` mode, a separate held-out gate model that never participates in the loop at all.
+
+```mermaid
+flowchart LR
+    Doc["draft.md"] --> R1["round 1<br/>lens: intent + completeness<br/>model: judges[0]"]
+    Doc --> R2["round 2<br/>lens: keyword-stuffing scrutiny<br/>model: judges[1 % len]"]
+    Doc --> R3["round N<br/>lens: E-E-A-T / scan / diff / CTR<br/>model: judges[N % len]"]
+    R1 -- "independent JSON call,<br/>no visibility into other rounds" --> Agg
+    R2 -- "independent JSON call" --> Agg
+    R3 -- "independent JSON call" --> Agg
+    Agg["per-criterion trimmed_mean()<br/>n at least 4: drop min and max,<br/>else plain average"] --> Cap{"citation_required and<br/>citation_links below min_citations?"}
+    Cap -- yes --> Cap60["cap this criterion at 60<br/>mark 🔒60 in report"]
+    Cap -- no --> Weighted
+    Cap60 --> Weighted["weighted sum -> total"]
+    Weighted --> Spread["spread = max - min per criterion<br/>reported as an instability signal"]
+```
+
+## Loop mode: regeneration, reward-hacking canaries, held-out gate
+
+```mermaid
+stateDiagram-v2
+    [*] --> Generate
+    Generate --> Score : score_doc via judge panel
+    Score --> CheckTarget
+    CheckTarget --> StopTarget : score reached target, no format issues
+    CheckTarget --> CheckPatience : target not reached
+    CheckPatience --> StopPatience : stalled for patience rounds in a row
+    CheckPatience --> CheckMaxIter : still improving
+    CheckMaxIter --> StopMaxIter : max_iter reached
+    CheckMaxIter --> Revise : iterations remain
+    Revise --> Generate : feedback_text + weak_points, then revise()
+    StopTarget --> Canaries
+    StopPatience --> Canaries
+    StopMaxIter --> Canaries
+    Canaries --> Gate : length canary and keyword-density canary
+    Gate --> [*] : held-out gate-model re-scores first draft vs best draft
+```
+
+`loop_run::run()` returns the **best-scoring iteration**, not the last one. Two canaries run once the loop stops:
+
+- **Length canary**: if character count grew more than 25% between the first and best drafts while the score gained under 5 points, it warns that the gain may be padding rather than substance.
+- **Keyword-density canary**: if `keyword_occurrences` (from `checks::metrics`) grew more than 50% while the score gained under 5 points, it warns of possible keyword stuffing. The source comments cite this as a second reward-hacking axis alongside length, referencing the repo's internal research notes (`docs/research-and-evidence-survey-2026-08-01.md`, §3.4) on why guarding a single axis lets optimization pressure shift to an unguarded one.
+
+If `--gate-model` is set, a model that never scored inside the loop re-scores only the first and best drafts after the loop ends. `report.rs` flags it when the held-out score delta is under a third of the in-loop delta — a sign the loop score rose by pleasing the loop's own judges rather than by genuine improvement.
+
+Regeneration prompts (`generate::build_revise_prompt`) never pass the numeric score back to the model — only `improvements` (concrete edit instructions) and the two weakest criteria by name — to avoid giving the model a number to directly optimize against. They also cap length drift explicitly ("keep total length within ±15% of the current draft").
 
 ## Document format
 
-The document being generated/scored is frontmatter plus Markdown.
+The artifact being generated or scored is YAML-ish frontmatter plus Markdown, parsed by `checks::parse_front_matter` (CRLF-safe, byte-offset based on `split('\n')` rather than `.lines()`):
 
 ```markdown
 ---
-title: "title, 50-60 characters"
-meta_description: "meta description, 120-160 characters"
+title: "50-60 character title"
+meta_description: "120-160 character meta description"
 ---
 
-# H1 (exactly one)
+# Exactly one H1
 
-Body... ## subheading ...
+Body content. Target keyword must appear in title, H1, and the first 100
+characters of the intro. Internal links use `[text](/path)`, citation/source
+links use `[text](https://...)`. Images need non-empty alt text:
+`![alt text](url)`.
 ```
 
-## Scoring
+## Content brief
 
-1. **Deterministic checks** (`checks.rs`, Rust, no LLM):
-   - title/meta_description character-count range
-   - Exactly one H1, no heading-level skipping (e.g. H1→H3 forbidden)
-   - Whether the target keyword is **present** in the title / H1 / first 100 characters of the intro (presence, not density — the SEO industry has no agreed-upon density threshold, so this project doesn't enforce an arbitrary percentage)
-   - Whether image alt text is present
-   - Whether the internal-link count falls within the spec's configured range (default 3–5) — **this range varies a lot by site structure and article length.** It's not an absolute standard, just a per-site reference value to tune in the spec file.
-   - Source/citation (external authoritative link) count — for E-E-A-T. A criterion marked `citation_required = true` gets a **hard 60-point cap in code** if citations fall below `min_citations` (see below)
-   - (secondary signal) Flesch Reading Ease / Flesch-Kincaid Grade — computed only for Latin-script content (see limitations below)
-2. **LLM rubric scoring**: **0–100** per criterion, default 4 criteria (weights tunable in `specs/*.toml`):
-   - `search_intent_match` 0.30 — fit with search intent
-   - `keyword_naturalness` 0.20 — natural keyword usage (avoiding over-optimization)
-   - `eeat_signals` 0.25 — experience/expertise/authoritativeness/trustworthiness signals, `citation_required = true`
-   - `structure_readability` 0.25 — heading hierarchy, paragraph structure, scannability
+`brief.example.md` is the bundled example a real brief follows — free-form Markdown with a few conventional sections (product/brand, target audience, key differentiators, and a "confirmed facts only, do not invent" section that explicitly lists claims the writer must *not* make):
 
-   Before scoring, the model must first write out "what conditions content needs to meet to rank for this search intent" (de-anchoring), and for every criterion it must **quote the document verbatim** and explain **"why not a higher score."** No quoted evidence caps the score at 60 (a general rule for content scoring, per the prompt).
-3. **Citation-shortfall 60-point cap (enforced in code)**: for a criterion like `eeat_signals` with `citation_required = true`, since the source/citation link count is deterministically countable — unlike bizplan-loop, which leaves this entirely to the LLM prompt — `score.rs` applies a **hard 60-point cap directly** based on the measured count. Shown in the report with a 🔒60 marker.
-4. **Aggregation**: `--rounds N` rounds → cycling models/lenses → **trimmed mean** per criterion (n≥4 drops min & max) → weighted sum.
-5. **Instability signal**: per-criterion score spread (±) is shown in the report. Don't trust a criterion with a wide spread.
-6. **Held-out gate** (`--gate-model`): a model that never participated in the loop re-scores only the first and best drafts. If the loop score rose but the held-out score didn't, it's flagged as scorer optimization (reward hacking).
+```markdown
+# 브랜드/제품
+어반런 — 초보 러너용 쿠셔닝 러닝화. 국내 자사몰 판매, 가격대 8~12만원.
 
-For de-anchoring, trimmed mean, held-out gate, length canary, and why a `--judge-model` panel is preferred over just increasing `--rounds` — with primary sources (arXiv papers, etc.) — see [bizplan-loop's DESIGN.md](https://github.com/Loop-Suite/bizplan-loop/blob/main/DESIGN.md).
+# 타깃 독자
+러닝을 막 시작한 20~30대. "러닝화 추천"으로 검색해 비교 중.
 
-## Open-source attribution
+# 핵심 차별점
+- 미드솔 반발탄성 실측치: 62%(자체 테스트, 경쟁사 평균 55%)
+- 착화감: 발볼이 넓은 발에도 편함(발볼 D~E 폭 대응)
+- 무료 30일 착화 후 반품 가능
 
-- **[BlogPilot Open Source AI SEO Content Studio](https://github.com/IamRamgarhia/BlogPilot-Open-Source-AI-SEO-Content-Studio)** (MIT): `src/checks.rs` ports the Flesch Reading Ease / Flesch-Kincaid Grade calculation logic from `src/lib/seo/readability.ts` (Markdown stripping → sentence/word splitting → syllable-count estimation → standard formula), rewritten in Rust. The algorithm structure was ported, not the code itself — see [NOTICE](NOTICE) for details.
-  The same repo's E-E-A-T checklist (`eeat-checklist.md`) is a methodology document, not code, so it was only used as an idea reference (reflected in the citation-link check and rubric wording).
-  The same repo's TF-IDF keyword extraction (`tfidf.ts`) was **not ported** — it needs a corpus of top-ranking competitor documents, and this CLI is a single-document generation/scoring tool with no such corpus.
-- `sour4bh/auto-seo` (no declared license, all rights reserved) — its code was not consulted at all. Only the general idea of "hybrid rule + LLM scoring" (not copyrightable) served as a general reference when designing this project's deterministic-check + LLM-rubric structure.
-- Yoast SEO (wordpress-seo, GPL-2.0) — its source was neither read nor referenced. Title/meta length, exactly-one-H1, heading hierarchy, etc. are widely known SEO-industry facts and were implemented independently.
-- **CyberCraftBD/power-seo** (MIT) — the idea for `paragraph_length_issues()` (flagging overly long paragraphs) came from this repo's `paragraph-length.ts`. The original thresholds are English word-count based (120–150); this project redesigned it around Korean character count (600 chars) instead, since it also handles non-English content — neither the code nor the original threshold was copied as-is. See [NOTICE](NOTICE).
+# 확인된 사실만 (지어내지 말 것)
+- 아직 마라톤 인증 기록 없음 — "레이스 검증됨" 같은 문구 금지
+- 색상 3종만 출시(블랙/그레이/화이트)
+```
+
+This entire file is inserted verbatim into the generation prompt (`generate::build_prompt`); the CLI itself is language-agnostic (the readability checks and prompts happen to be tuned with Korean content in mind, but nothing in `main.rs`/`spec.rs` requires it).
 
 ## Spec (`specs/*.toml`)
 
+Bundled example: `specs/example-blogpost.toml`. A spec defines the target keyword, length/link constraints, optional recommended H2 outline, content angles, and the weighted rubric:
+
 ```toml
-name = "Blog post"
-context = "Site/brand/target-audience context. Inserted verbatim into the prompt"
-keyword = "target keyword"
-site_domain = "example.com"   # basis for internal/external link classification
+name = "블로그 글 (예시 스펙)"
+keyword = "러닝화 추천"
+site_domain = "example.com"   # basis for internal vs. citation link classification
 
 title_min = 50
 title_max = 60
@@ -170,46 +324,68 @@ internal_links_min = 3
 internal_links_max = 5
 min_citations = 1
 
+angles = [
+  "단계별 how-to 가이드 형식으로 실행 순서를 전면에 세운다.",
+  "리스트형(listicle)으로 비교 항목을 나열해 훑어보기 쉽게 만든다.",
+  "실제 착화 후기·데이터 중심으로 신뢰도를 전면에 세운다.",
+]
+
+[[sections]]
+id = "faq"
+title = "자주 묻는 질문"
+guide = "구매 전 흔한 궁금증 3~5개를 Q&A로 정리(FAQ 스니펫 노출 목적)."
+required = false
+
 [[criteria]]
 id = "eeat_signals"
-name = "E-E-A-T signals"
+name = "E-E-A-T 신호"
 weight = 0.25
-guide = "..."
-citation_required = true   # 60-point cap if citations are insufficient
+guide = "1인칭 경험, 구체적 수치, 신뢰할 수 있는 출처 인용이 있는가."
+citation_required = true   # citation_links below min_citations -> 60-point cap
 ```
 
-Bundled spec: `specs/example-blogpost.toml`. Example content brief: `brief.example.md`.
+`site_domain` drives `checks::is_internal_url`: a link's host must equal `site_domain` or be one of its subdomains to count as internal — plain substring matching was deliberately avoided so that `notexample.com` or `example.com.evil.com` aren't misclassified as internal.
+
+## Report output
+
+Every run writes to `--out`:
+
+- `report.md` — ranked table (`gen`/`score`) or per-iteration trend (`loop`), each with per-criterion score, `±spread/2`, a `🔒60` marker where the citation cap applied, on-page metrics (title/meta length, H1 count, internal/citation link counts), Flesch or Korean-heuristic readability, judge comments, and unresolved format issues.
+- `results.jsonl` — one `Scored` record per document (`report::append_jsonl`), including raw per-judge scores (`raw`), not just the aggregate.
+- `candNN.md` / `iterNN.md` and `best.md` — the actual generated documents.
 
 ## Limitations & assumptions
 
-- **Keyword density is not checked.** Only presence (title/H1/intro) is checked — density thresholds have no industry consensus, so enforcing an arbitrary percentage could actively encourage bad optimization.
-- **The 3–5 internal-link range varies a lot by source.** Tune `internal_links_min/max` per site in the spec file.
-- **The Flesch readability metric is English-only.** The Flesch formula is based on English syllable counting and doesn't hold for Korean and other non-Latin-script content. If the body's Latin-character share is under 50%, the calculation is skipped automatically and shown as N/A in the report (an arbitrary judgment call — other thresholds are possible, 50% was chosen conservatively).
-- Internal/citation link classification is a simple heuristic based on whether the URL's host matches `site_domain` — subdomains, shortened URLs, etc. can still be misclassified in edge cases.
-- LLM scores do not guarantee actual search ranking or click-through rate. Intended for **relative comparison** and **direction for improvement** within the same spec and scoring model.
-- If the generation and scoring models are the same, it tends to rate its own style generously (a warning is printed if `--judge-model` isn't set).
-- `claude -p` doesn't expose temperature → draft diversity comes only from angle prompts.
-- Output is Markdown (including frontmatter). Converting it to an actual CMS's publish format is out of scope.
+These are stated directly in the codebase (`checks.rs` comments, README-adjacent code comments) rather than inferred:
 
-## 리서치 기반 개선 반영 (2026-08-01)
+- **Keyword density is not checked** — only *presence* in title/H1/intro. The SEO industry has no agreed density threshold, so the tool avoids enforcing an arbitrary percentage.
+- **The 3-5 internal-link default is a starting point, not a standard** — tune `internal_links_min/max` per site in the spec.
+- **Flesch readability is English-only.** `checks::readability()` skips the calculation (returns `None`) when the ASCII-alphabetic share of non-whitespace characters is under 50%, since the Flesch formula assumes English syllable counting.
+- **The Korean readability heuristic is unvalidated.** `checks::korean_readability()` computes `100 - avg_words_per_sentence*1.015 - avg_syllables_per_word*8.0 - technical_term_ratio*35.0`, mutually exclusive with Flesch (kicks in only when Latin share is under 50%). The source comments are explicit that this formula's coefficients came from an upstream project that itself disclaims peer-reviewed backing — the report always marks it with an "unvalidated heuristic" warning.
+- **Internal/citation link classification is host-based**, not content-based — shortened URLs or unusual redirects can still be misclassified.
+- **Scores are for relative comparison, not a ranking guarantee.** They indicate direction of improvement within one spec and one scoring model, not actual search performance.
+- If the generation and judge model are the same, the CLI prints a warning (self-scoring bias).
+- `claude -p` exposes no temperature control, so draft diversity comes entirely from the `angles` prompts, not sampling temperature.
+- Output is Markdown with frontmatter; converting that into a specific CMS's publish format is out of scope.
 
-`docs/research-and-evidence-survey-2026-08-01.md` §5 백로그 중 다음을 구현했다.
+## What was deliberately not built
 
-- **다축 reward-hacking canary 추가** (`loop_run.rs`): 기존 길이 인플레이션 canary(분량 +25%인데 점수 +5 미만)는 arXiv:2605.27996("Reward Bias Substitution")이 경고하는 "단일 축 방어"에 해당한다. 이 논문의 핵심 주장 — 편향 축 하나(길이)만 막으면 최적화 압력이 관측되지 않는 다른 축으로 옮겨간다 — 을 근거로, 회차 간 타깃 키워드 등장 횟수(`Metrics::keyword_occurrences`)가 +50% 이상 급증했는데 점수 상승폭이 미미한(+5점 미만) 경우를 감시하는 키워드 밀도 canary를 추가했다. "저품질 인용 링크로 개수만 채우기" 축 대신 이 축을 고른 이유: `checks.rs`에 이미 있는 `norm_kw` 정규화 로직을 재사용할 수 있어 구현이 더 깔끔하고, 링크 품질 판정은 URL을 실제로 fetch해야 해서 아래 "스킵" 항목과 같은 이유로 제외했다.
-- **한국어 가독성 휴리스틱 opt-in 추가** (`checks.rs::korean_readability`, `Metrics::korean_readability_heuristic`): 라틴 문자 비중이 50% 이상이면(Flesch가 계산되는 조건) 계산하지 않는 상호배타 필드로 추가했다. 공식은 `naaaayeonn/AI-literacy-care-Agent`(Python, 문서 `READABILITY_FORMULA.md`)를 참고했으나 코드는 포팅하지 않고 공식만 Rust로 재작성했다: `100 - (평균 어절수/문장 × 1.015) - (평균 음절수/어절 × 8.0) - (전문용어비율 × 35.0)`. **이 공식의 계수는 원 출처 스스로 동료검토된 학술적 근거가 없다고 명시한 경험적 휴리스틱**이므로 Flesch(표준 공식)와 별도 필드로 분리하고, 리포트에는 항상 "⚠️ 검증되지 않은 휴리스틱" 표기를 붙인다.
-- **`score_doc` 라운드 병렬화** (`score.rs`): 문서 1건 채점 시 라운드마다 순차 호출하던 것을, `main.rs::par_map`이 문서 간 병렬화에 쓰는 `std::thread::scope` 패턴을 그대로 라운드 단위에 적용해 병렬화했다. `--concurrency`는 이미 문서 단위 예산이므로 별도 옵션 없이 라운드 수만큼만 스레드를 스폰하는 단순 구현으로 제한했다. 결과는 라운드 인덱스 순서를 유지해 반환하므로 `trimmed_mean` 등 집계 로직은 영향받지 않는다.
+Two backlog items from `docs/research-and-evidence-survey-2026-08-01.md` (§5) were left unimplemented on purpose, per that document's own conclusion:
 
-다음 두 항목은 리서치 문서가 명시적으로 보류를 결론 낸 항목이라 구현하지 않았다.
+- **`pulldown-cmark` for Markdown parsing** — the survey concluded the hand-rolled parser is sufficient until a concrete bug shows up (reference-style links, `]` inside code spans, autolink edge cases); no such trigger has occurred.
+- **Fetching citation URLs to verify they're real/authoritative (FacTool-style)** — rejected as conflicting with the project's offline/reproducibility-first design; adding a network dependency for link verification was judged out of scope.
 
-- **`pulldown-cmark` 도입**: §3.3이 "현재는 불필요, reference-style 링크·코드스팬 내 `]`·오토링크 버그가 실제로 나오면 그때 재검토"로 조건부 보류를 명시했다. 트리거 조건 미충족 상태라 구현하지 않았다.
-- **인용 URL 실제 fetch 검증(FacTool류)**: §5가 "오프라인/재현성 우선 철학과 상충, 아이디어 단계"로 명시했다. 네트워크 의존성을 추가하는 자체가 이 CLI의 설계 철학과 맞지 않아 구현하지 않았다.
+## Attribution
 
-## Multi-lens review findings applied
+Per `NOTICE` (Apache-2.0 project):
 
-Findings CONFIRMED by a review-panel pass (functionality/good_things/tests lenses) were applied:
-- Fixed a real bug where the frontmatter parser under-counted by 1 byte per line on CRLF documents, truncating the start of the body (rewritten around `split('\n')`-based offset calculation instead of `.lines()`).
-- Frontmatter with no closing `---` is now explicitly detected and flagged (previously it silently fell back to treating the whole document as body, corrupting readability/heading checks).
-- Fixed `is_internal_url`, which used substring matching and could misclassify hosts like `notexample.com`/`example.com.evil.com` as internal links, to compare the host exactly instead.
-- Added a paragraph-length check (idea from CyberCraftBD/power-seo, MIT, redesigned around Korean character count — see NOTICE).
-- `scan_links()` now tracks bracket depth to handle a nested `[a[b]c](url)` label correctly and ignores escaped `\[`/`\]`.
-- Broadened test coverage: CRLF frontmatter, unclosed frontmatter, host-spoofing rejection, the Korean-readability-returns-None branch, whitespace-only alt text, nested/escaped brackets, and more.
+- **[BlogPilot Open Source AI SEO Content Studio](https://github.com/IamRamgarhia/BlogPilot-Open-Source-AI-SEO-Content-Studio)** (MIT) — `checks.rs`'s Flesch Reading Ease / Flesch-Kincaid Grade calculation ports the *algorithm structure* (Markdown stripping → sentence/word split → syllable estimation → standard formula) from `src/lib/seo/readability.ts`, rewritten in Rust; no code was copied. The same repo's `eeat-checklist.md` (a methodology document, not code) was used only as an idea reference for the citation-link check and rubric wording. Its `tfidf.ts` keyword extractor was reviewed but not ported — it needs a competitor-document corpus that a single-document CLI has no way to obtain.
+- **CyberCraftBD/power-seo** (MIT) — the idea behind `paragraph_length_issues()` (flagging overly long paragraphs) came from this repo's `paragraph-length.ts`; the original's English word-count thresholds (120-150 words) were redesigned around a 600-character Korean-appropriate threshold instead of being copied.
+- **`sour4bh/auto-seo`** (no declared license) — its code was not consulted; only the uncopyrightable general idea of "hybrid rule + LLM scoring" served as background.
+- **Yoast SEO** (GPL-2.0) — not read or referenced; title/meta length and heading-hierarchy rules are widely known SEO facts implemented independently.
+
+Full detail, including which files and license terms, is in [`NOTICE`](NOTICE).
+
+## License
+
+Apache License, Version 2.0. See [`LICENSE`](LICENSE) and [`NOTICE`](NOTICE).
