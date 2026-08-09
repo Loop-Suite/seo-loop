@@ -22,12 +22,19 @@ fn header(spec: &Spec, rows: &[&Scored]) -> String {
         md.push_str(&format!("> Scoring basis: {}\n\n", spec.scoring_source));
     }
     let rounds = rows.first().map(|r| r.rounds).unwrap_or(0);
-    let models = rows.first().map(|r| r.models.join(", ")).unwrap_or_default();
+    let models = rows
+        .first()
+        .map(|r| r.models.join(", "))
+        .unwrap_or_default();
     md.push_str(&format!(
         "{} documents · {} scoring round(s) per document · Scoring model(s): {}\n\n",
         rows.len(),
         rounds,
-        if models.is_empty() { "-".into() } else { models }
+        if models.is_empty() {
+            "-".into()
+        } else {
+            models
+        }
     ));
     md
 }
@@ -37,7 +44,9 @@ fn table(spec: &Spec, rows: &[&Scored]) -> String {
     for c in &spec.criteria {
         md.push_str(&format!(" {} |", c.name));
     }
-    md.push_str(" title | meta | H1 | Internal Links | Citation Links | Format Issues |\n|---|---|---|");
+    md.push_str(
+        " title | meta | H1 | Internal Links | Citation Links | Format Issues |\n|---|---|---|",
+    );
     for _ in &spec.criteria {
         md.push_str("---|");
     }
@@ -50,7 +59,12 @@ fn table(spec: &Spec, rows: &[&Scored]) -> String {
             let sp = s.spread.get(&c.id).copied().unwrap_or(0.0);
             let capped = s.citation_capped.contains(&c.id);
             if sp > 0.0 {
-                md.push_str(&format!(" {:.0} (±{:.0}){} |", v, sp / 2.0, if capped { " 🔒60" } else { "" }));
+                md.push_str(&format!(
+                    " {:.0} (±{:.0}){} |",
+                    v,
+                    sp / 2.0,
+                    if capped { " 🔒60" } else { "" }
+                ));
             } else {
                 md.push_str(&format!(" {:.0}{} |", v, if capped { " 🔒60" } else { "" }));
             }
@@ -62,7 +76,11 @@ fn table(spec: &Spec, rows: &[&Scored]) -> String {
             s.metrics.h1_count,
             s.metrics.internal_links,
             s.metrics.citation_links,
-            if s.format_issues.is_empty() { "-".to_string() } else { format!("{} issue(s)", s.format_issues.len()) }
+            if s.format_issues.is_empty() {
+                "-".to_string()
+            } else {
+                format!("{} issue(s)", s.format_issues.len())
+            }
         ));
     }
     md
@@ -82,9 +100,15 @@ fn details(rows: &[&Scored]) -> String {
             s.metrics.internal_links,
             s.metrics.citation_links
         ));
-        match (s.metrics.flesch_reading_ease, s.metrics.flesch_kincaid_grade) {
+        match (
+            s.metrics.flesch_reading_ease,
+            s.metrics.flesch_kincaid_grade,
+        ) {
             (Some(ease), Some(grade)) => {
-                md.push_str(&format!(" · Flesch Reading Ease {:.0} (Grade {:.1})", ease, grade));
+                md.push_str(&format!(
+                    " · Flesch Reading Ease {:.0} (Grade {:.1})",
+                    ease, grade
+                ));
             }
             _ => md.push_str(" · Flesch: N/A (non-English content — see README limitations)"),
         }
@@ -116,7 +140,11 @@ fn details(rows: &[&Scored]) -> String {
             md.push('\n');
         }
         md.push_str("Improvement instructions:\n\n");
-        for imp in s.improvements.iter().filter(|i| !s.format_issues.contains(i)) {
+        for imp in s
+            .improvements
+            .iter()
+            .filter(|i| !s.format_issues.contains(i))
+        {
             md.push_str(&format!("- {}\n", imp));
         }
     }
@@ -126,12 +154,19 @@ fn details(rows: &[&Scored]) -> String {
 /// Ranking report.
 pub fn write_report(out_dir: &Path, spec: &Spec, scored: &[Scored]) -> Result<PathBuf> {
     let mut rows: Vec<&Scored> = scored.iter().collect();
-    rows.sort_by(|a, b| b.total.partial_cmp(&a.total).unwrap_or(std::cmp::Ordering::Equal));
+    rows.sort_by(|a, b| {
+        b.total
+            .partial_cmp(&a.total)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 
     let mut md = header(spec, &rows);
     md.push_str(&table(spec, &rows));
     md.push_str(&details(&rows));
-    md.push_str(&format!("\n---\n\nCumulative API cost: ${:.4}\n", crate::llm::total_cost_usd()));
+    md.push_str(&format!(
+        "\n---\n\nCumulative API cost: ${:.4}\n",
+        crate::llm::total_cost_usd()
+    ));
 
     let path = out_dir.join("report.md");
     std::fs::write(&path, md).with_context(|| format!("Failed to write {}", path.display()))?;
@@ -163,14 +198,21 @@ pub fn write_loop_report(
         };
         md.push_str(&format!(
             "| {} | {:.1} | {} | {} chars | {} issue(s) |\n",
-            h.label, h.total, d, h.metrics.chars, h.format_issues.len()
+            h.label,
+            h.total,
+            d,
+            h.metrics.chars,
+            h.format_issues.len()
         ));
         prev = Some(h.total);
     }
 
     if let Some((first, best)) = gate {
-        let loop_delta =
-            history.iter().map(|h| h.total).fold(f64::NEG_INFINITY, f64::max) - history[0].total;
+        let loop_delta = history
+            .iter()
+            .map(|h| h.total)
+            .fold(f64::NEG_INFINITY, f64::max)
+            - history[0].total;
         let gate_delta = best.total - first.total;
         md.push_str(&format!(
             "\n## Held-out Verification (scoring model excluded from the loop: {})\n\n\
@@ -180,7 +222,10 @@ pub fn write_loop_report(
             best.models.join(", "),
             history[0].total,
             first.total,
-            history.iter().map(|h| h.total).fold(f64::NEG_INFINITY, f64::max),
+            history
+                .iter()
+                .map(|h| h.total)
+                .fold(f64::NEG_INFINITY, f64::max),
             best.total,
             loop_delta,
             gate_delta
@@ -202,7 +247,10 @@ pub fn write_loop_report(
 
     let rows: Vec<&Scored> = history.iter().collect();
     md.push_str(&details(&rows));
-    md.push_str(&format!("\n---\n\nCumulative API cost: ${:.4}\n", crate::llm::total_cost_usd()));
+    md.push_str(&format!(
+        "\n---\n\nCumulative API cost: ${:.4}\n",
+        crate::llm::total_cost_usd()
+    ));
 
     let path = out_dir.join("report.md");
     std::fs::write(&path, md).with_context(|| format!("Failed to write {}", path.display()))?;

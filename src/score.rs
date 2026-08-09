@@ -183,7 +183,10 @@ pub fn score_doc(
             .collect();
         handles
             .into_iter()
-            .map(|h| h.join().unwrap_or_else(|_| Err(anyhow::anyhow!("Scoring thread panicked ({label})"))))
+            .map(|h| {
+                h.join()
+                    .unwrap_or_else(|_| Err(anyhow::anyhow!("Scoring thread panicked ({label})")))
+            })
             .collect()
     });
 
@@ -279,7 +282,12 @@ pub fn weak_points(spec: &Spec, s: &Scored) -> String {
     let mut v: Vec<(&str, f64)> = spec
         .criteria
         .iter()
-        .map(|c| (c.name.as_str(), s.per_criterion.get(&c.id).copied().unwrap_or(0.0)))
+        .map(|c| {
+            (
+                c.name.as_str(),
+                s.per_criterion.get(&c.id).copied().unwrap_or(0.0),
+            )
+        })
         .collect();
     v.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
     v.iter()

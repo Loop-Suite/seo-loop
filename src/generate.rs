@@ -1,6 +1,6 @@
+use crate::llm::Llm;
 use crate::spec::Spec;
 use anyhow::Result;
-use crate::llm::Llm;
 
 pub const SYSTEM: &str = "You are an expert SEO copywriter. You write blog posts and \
 landing page copy that precisely match search intent, naturally weave in keywords \
@@ -11,15 +11,29 @@ effectiveness, and you attach source links to claims that have supporting eviden
 /// Initial generation prompt.
 pub fn build_prompt(spec: &Spec, brief: &str, angle: &str) -> String {
     let mut p = String::new();
-    p.push_str("# Task\nWrite an SEO content draft in Korean according to the conditions below.\n\n");
-    p.push_str(&format!("## Content type: {}\n{}\n\n", spec.name, spec.context));
+    p.push_str(
+        "# Task\nWrite an SEO content draft in Korean according to the conditions below.\n\n",
+    );
+    p.push_str(&format!(
+        "## Content type: {}\n{}\n\n",
+        spec.name, spec.context
+    ));
     p.push_str(&format!("## Target keyword\n{}\n\n", spec.keyword));
     if !angle.is_empty() {
         p.push_str(&format!("## Content angle for this draft\n{}\n\n", angle));
     }
-    p.push_str(&format!("## Content brief (source material)\n{}\n\n", brief));
-    p.push_str(&format!("## Recommended outline (H2+)\n{}\n\n", spec.sections_prompt()));
-    p.push_str(&format!("## Scoring criteria (keep these in mind while writing)\n{}\n\n", spec.rubric_prompt()));
+    p.push_str(&format!(
+        "## Content brief (source material)\n{}\n\n",
+        brief
+    ));
+    p.push_str(&format!(
+        "## Recommended outline (H2+)\n{}\n\n",
+        spec.sections_prompt()
+    ));
+    p.push_str(&format!(
+        "## Scoring criteria (keep these in mind while writing)\n{}\n\n",
+        spec.rubric_prompt()
+    ));
     p.push_str(&format!(
         "## Output format (must follow)\n\
          - Put front matter at the very top of the document:\n\
@@ -57,15 +71,30 @@ pub fn build_revise_prompt(
 ) -> String {
     let mut p = String::new();
     p.push_str("# Task\nImprove the SEO content draft below according to the review feedback and output the entire revised document again.\n\n");
-    p.push_str(&format!("## Content type: {}\n{}\n\n", spec.name, spec.context));
+    p.push_str(&format!(
+        "## Content type: {}\n{}\n\n",
+        spec.name, spec.context
+    ));
     p.push_str(&format!("## Target keyword\n{}\n\n", spec.keyword));
-    p.push_str(&format!("## Content brief (source material)\n{}\n\n", brief));
+    p.push_str(&format!(
+        "## Content brief (source material)\n{}\n\n",
+        brief
+    ));
     p.push_str(&format!("## Current draft\n{}\n\n", prev_doc));
-    p.push_str(&format!("## Review feedback (must be addressed)\n{}\n\n", feedback));
+    p.push_str(&format!(
+        "## Review feedback (must be addressed)\n{}\n\n",
+        feedback
+    ));
     if !weak.is_empty() {
-        p.push_str(&format!("## Items with especially low scores\n{}\n\n", weak));
+        p.push_str(&format!(
+            "## Items with especially low scores\n{}\n\n",
+            weak
+        ));
     }
-    p.push_str(&format!("## Scoring criteria\n{}\n\n", spec.rubric_prompt()));
+    p.push_str(&format!(
+        "## Scoring criteria\n{}\n\n",
+        spec.rubric_prompt()
+    ));
     p.push_str(
         "## Output rules\n\
          - Output the entire improved document (including front matter) as markdown. No change summaries or meta-commentary.\n\

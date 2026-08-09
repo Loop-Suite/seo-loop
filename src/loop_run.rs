@@ -137,7 +137,8 @@ pub fn run(
     // trustworthiness, which we explicitly excluded from this scope for the same reason as
     // the FacTool-type items in the §5 backlog (conflicts with the offline/reproducibility-first
     // philosophy and adds a network dependency).
-    let d_kw = best_score.metrics.keyword_occurrences as f64 - first.metrics.keyword_occurrences as f64;
+    let d_kw =
+        best_score.metrics.keyword_occurrences as f64 - first.metrics.keyword_occurrences as f64;
     if first.metrics.keyword_occurrences > 0 {
         let kw_growth = d_kw / first.metrics.keyword_occurrences as f64;
         if kw_growth > 0.5 && d_score < 5.0 {

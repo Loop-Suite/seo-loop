@@ -158,7 +158,15 @@ fn real_main() -> Result<()> {
     }
 
     match &cli.cmd {
-        Cmd::Gen { spec, brief, count, out, rounds, concurrency, no_score } => {
+        Cmd::Gen {
+            spec,
+            brief,
+            count,
+            out,
+            rounds,
+            concurrency,
+            no_score,
+        } => {
             let sp = Spec::load(spec)?;
             let brief_text = read_text(brief)?;
             let out_dir = prepare_out(out)?;
@@ -180,21 +188,38 @@ fn real_main() -> Result<()> {
                     docs.len()
                 );
             }
-            anyhow::ensure!(!docs.is_empty(), "Generation failed: all {requested} requested item(s) failed");
+            anyhow::ensure!(
+                !docs.is_empty(),
+                "Generation failed: all {requested} requested item(s) failed"
+            );
 
             if *no_score {
-                println!("Output: {}  (cumulative ${:.4})", out_dir.display(), llm::total_cost_usd());
+                println!(
+                    "Output: {}  (cumulative ${:.4})",
+                    out_dir.display(),
+                    llm::total_cost_usd()
+                );
                 return Ok(());
             }
             let scored = score_many(&judges, &sp, docs, *rounds, *concurrency, &out_dir);
             finish(&out_dir, &sp, &scored)
         }
 
-        Cmd::Score { spec, input, out, rounds, concurrency } => {
+        Cmd::Score {
+            spec,
+            input,
+            out,
+            rounds,
+            concurrency,
+        } => {
             let sp = Spec::load(spec)?;
             let out_dir = prepare_out(out)?;
             let files = collect_docs(input)?;
-            anyhow::ensure!(!files.is_empty(), "No documents to score: {}", input.display());
+            anyhow::ensure!(
+                !files.is_empty(),
+                "No documents to score: {}",
+                input.display()
+            );
             println!("Scoring {} item(s) — {}", files.len(), sp.name);
 
             let mut docs: Vec<(String, String)> = Vec::new();
@@ -210,7 +235,16 @@ fn real_main() -> Result<()> {
         }
 
         Cmd::Loop {
-            spec, brief, out, target, max_iter, rounds, min_delta, patience, angle, gate_model,
+            spec,
+            brief,
+            out,
+            target,
+            max_iter,
+            rounds,
+            min_delta,
+            patience,
+            angle,
+            gate_model,
         } => {
             let sp = Spec::load(spec)?;
             let brief_text = read_text(brief)?;
@@ -227,7 +261,10 @@ fn real_main() -> Result<()> {
                 min_delta: *min_delta,
                 patience: *patience,
             };
-            println!("Starting loop — target {:.0} points, max {} iterations", target, max_iter);
+            println!(
+                "Starting loop — target {:.0} points, max {} iterations",
+                target, max_iter
+            );
             let r = loop_run::run(&gen_llm, &judges, &sp, &brief_text, &out_dir, &cfg, &angle)?;
 
             // held-out gate: re-score only the first draft and best draft with a model that didn't participate in the loop
@@ -237,7 +274,10 @@ fn real_main() -> Result<()> {
                 let g = vec![build_llm(&cli, Some(gm.clone()))];
                 let f = score::score_doc(&g, &sp, "gate-first", &r.first_doc, 1)?;
                 let b = score::score_doc(&g, &sp, "gate-best", &r.best_doc, 1)?;
-                println!("  first draft {:.1} → best draft {:.1} (held-out)", f.total, b.total);
+                println!(
+                    "  first draft {:.1} → best draft {:.1} (held-out)",
+                    f.total, b.total
+                );
                 gate_pair = Some((f, b));
             }
 
@@ -268,7 +308,11 @@ fn finish(out_dir: &Path, sp: &Spec, scored: &[Scored]) -> Result<()> {
     anyhow::ensure!(!scored.is_empty(), "No documents were successfully scored");
     let path = report::write_report(out_dir, sp, scored)?;
     let mut ranked: Vec<&Scored> = scored.iter().collect();
-    ranked.sort_by(|a, b| b.total.partial_cmp(&a.total).unwrap_or(std::cmp::Ordering::Equal));
+    ranked.sort_by(|a, b| {
+        b.total
+            .partial_cmp(&a.total)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     println!("\nRanking");
     for (i, s) in ranked.iter().enumerate() {
         println!("  {}. {} — {:.1}/100", i + 1, s.label, s.total);
@@ -326,7 +370,10 @@ where
             let handles: Vec<_> = chunk.into_iter().map(|item| s.spawn(|| f(item))).collect();
             handles
                 .into_iter()
-                .map(|h| h.join().unwrap_or_else(|_| Err(anyhow::anyhow!("worker thread panicked"))))
+                .map(|h| {
+                    h.join()
+                        .unwrap_or_else(|_| Err(anyhow::anyhow!("worker thread panicked")))
+                })
                 .collect()
         });
         for r in results {
@@ -347,7 +394,8 @@ fn read_text(p: &Path) -> Result<String> {
 }
 
 fn prepare_out(p: &Path) -> Result<PathBuf> {
-    std::fs::create_dir_all(p).with_context(|| format!("Failed to create output directory: {}", p.display()))?;
+    std::fs::create_dir_all(p)
+        .with_context(|| format!("Failed to create output directory: {}", p.display()))?;
     Ok(p.to_path_buf())
 }
 
@@ -360,7 +408,9 @@ fn collect_docs(input: &Path) -> Result<Vec<PathBuf>> {
         .filter_map(|e| e.ok().map(|e| e.path()))
         .filter(|p| {
             p.is_file()
-                && p.extension().map(|e| e == "md" || e == "txt").unwrap_or(false)
+                && p.extension()
+                    .map(|e| e == "md" || e == "txt")
+                    .unwrap_or(false)
                 && p.file_name().map(|n| n != "report.md").unwrap_or(true)
         })
         .collect();

@@ -118,7 +118,12 @@ pub fn headings(body: &str) -> Vec<(usize, String)> {
         let t = line.trim_start();
         if t.starts_with('#') {
             let level = t.chars().take_while(|&c| c == '#').count();
-            if (1..=6).contains(&level) && t.as_bytes().get(level).map(|b| *b == b' ').unwrap_or(level == t.len()) {
+            if (1..=6).contains(&level)
+                && t.as_bytes()
+                    .get(level)
+                    .map(|b| *b == b' ')
+                    .unwrap_or(level == t.len())
+            {
                 let text = t.trim_start_matches('#').trim().to_string();
                 out.push((level, text));
             }
@@ -155,7 +160,11 @@ pub fn scan_links(text: &str) -> Vec<MdLink> {
                     if let Some(paren_close) = find_char(&chars, close + 2, ')') {
                         let label: String = chars[bracket_start + 1..close].iter().collect();
                         let url: String = chars[close + 2..paren_close].iter().collect();
-                        out.push(MdLink { is_image, label, url });
+                        out.push(MdLink {
+                            is_image,
+                            label,
+                            url,
+                        });
                         i = paren_close + 1;
                         continue;
                     }
@@ -201,7 +210,9 @@ fn find_matching_bracket_close(chars: &[char], from: usize) -> Option<usize> {
 /// or `example.com.evil.com` could be misclassified as an "internal link".)
 fn is_internal_url(url: &str, site_domain: &str) -> bool {
     let low = url.to_lowercase();
-    let rest = low.strip_prefix("https://").or_else(|| low.strip_prefix("http://"));
+    let rest = low
+        .strip_prefix("https://")
+        .or_else(|| low.strip_prefix("http://"));
     match rest {
         Some(rest) => {
             if site_domain.is_empty() {
@@ -217,7 +228,10 @@ fn is_internal_url(url: &str, site_domain: &str) -> bool {
 }
 
 fn norm_kw(s: &str) -> String {
-    s.chars().filter(|c| !c.is_whitespace()).collect::<String>().to_lowercase()
+    s.chars()
+        .filter(|c| !c.is_whitespace())
+        .collect::<String>()
+        .to_lowercase()
 }
 
 fn contains_kw(haystack: &str, keyword: &str) -> bool {
@@ -260,7 +274,11 @@ pub fn metrics(doc: &str, spec: &Spec) -> Metrics {
     let meta = meta.unwrap_or_default();
     let heads = headings(body);
     let h1_count = heads.iter().filter(|(l, _)| *l == 1).count();
-    let h1_text = heads.iter().find(|(l, _)| *l == 1).map(|(_, t)| t.clone()).unwrap_or_default();
+    let h1_text = heads
+        .iter()
+        .find(|(l, _)| *l == 1)
+        .map(|(_, t)| t.clone())
+        .unwrap_or_default();
 
     let mut heading_skips = 0usize;
     let mut prev = 0usize;
@@ -273,7 +291,10 @@ pub fn metrics(doc: &str, spec: &Spec) -> Metrics {
 
     let links = scan_links(body);
     let images_total = links.iter().filter(|l| l.is_image).count();
-    let images_missing_alt = links.iter().filter(|l| l.is_image && l.label.trim().is_empty()).count();
+    let images_missing_alt = links
+        .iter()
+        .filter(|l| l.is_image && l.label.trim().is_empty())
+        .count();
     let internal_links = links
         .iter()
         .filter(|l| !l.is_image && is_internal_url(&l.url, &spec.site_domain))
@@ -351,7 +372,10 @@ pub fn format_issues(spec: &Spec, doc: &str) -> Vec<String> {
     }
 
     if m.meta_chars == 0 {
-        issues.push("Missing meta_description (front matter needs `meta_description:`) → add one".to_string());
+        issues.push(
+            "Missing meta_description (front matter needs `meta_description:`) → add one"
+                .to_string(),
+        );
     } else if m.meta_chars < spec.meta_min || m.meta_chars > spec.meta_max {
         issues.push(format!(
             "meta_description length {} chars (recommended {}-{} chars) → adjust length",
@@ -362,7 +386,10 @@ pub fn format_issues(spec: &Spec, doc: &str) -> Vec<String> {
     if m.h1_count == 0 {
         issues.push("No H1 → add one `# Title` heading to the body".to_string());
     } else if m.h1_count > 1 {
-        issues.push(format!("{} H1 headings found → keep exactly one and demote the rest to H2 or lower", m.h1_count));
+        issues.push(format!(
+            "{} H1 headings found → keep exactly one and demote the rest to H2 or lower",
+            m.h1_count
+        ));
     }
 
     if m.heading_skips > 0 {
@@ -374,10 +401,16 @@ pub fn format_issues(spec: &Spec, doc: &str) -> Vec<String> {
 
     if !spec.keyword.trim().is_empty() {
         if !m.keyword_in_title {
-            issues.push(format!("Target keyword '{}' not found in title → place it there", spec.keyword));
+            issues.push(format!(
+                "Target keyword '{}' not found in title → place it there",
+                spec.keyword
+            ));
         }
         if !m.keyword_in_h1 {
-            issues.push(format!("Target keyword '{}' not found in H1 → place it there", spec.keyword));
+            issues.push(format!(
+                "Target keyword '{}' not found in H1 → place it there",
+                spec.keyword
+            ));
         }
         if !m.keyword_in_intro {
             issues.push(format!("Target keyword '{}' not found within the first 100 chars of the intro → place it there", spec.keyword));
@@ -486,18 +519,28 @@ fn strip_markdown_to_prose(body: &str) -> String {
                 } else {
                     format!("[{}]({})", l.label, l.url)
                 };
-                let repl = if l.is_image { String::new() } else { l.label.clone() };
+                let repl = if l.is_image {
+                    String::new()
+                } else {
+                    l.label.clone()
+                };
                 rest = rest.replacen(&full, &repl, 1);
             }
             out.push_str(&rest);
         }
         out.push('\n');
     }
-    out.chars().filter(|c| !matches!(c, '*' | '_' | '~' | '>' | '`')).collect()
+    out.chars()
+        .filter(|c| !matches!(c, '*' | '_' | '~' | '>' | '`'))
+        .collect()
 }
 
 fn count_syllables(word: &str) -> usize {
-    let w: String = word.to_lowercase().chars().filter(|c| c.is_ascii_alphabetic()).collect();
+    let w: String = word
+        .to_lowercase()
+        .chars()
+        .filter(|c| c.is_ascii_alphabetic())
+        .collect();
     if w.is_empty() {
         return 0;
     }
@@ -541,7 +584,10 @@ fn readability(body: &str) -> Option<(f64, f64)> {
         return None; // non-English content such as Korean — the English syllable-based formula does not apply
     }
 
-    let words: Vec<&str> = prose.split_whitespace().filter(|w| w.chars().any(|c| c.is_ascii_alphabetic())).collect();
+    let words: Vec<&str> = prose
+        .split_whitespace()
+        .filter(|w| w.chars().any(|c| c.is_ascii_alphabetic()))
+        .collect();
     if words.is_empty() {
         return None;
     }
@@ -607,7 +653,9 @@ fn count_korean_sentences(text: &str) -> usize {
 /// it ends with a Korean technical-term suffix (화/율/성/도/적/론/법/형/식/계/기/학), in which case it's true.
 /// Punctuation (e.g. periods) around the word is trimmed before judging.
 fn is_technical_word(word: &str) -> bool {
-    const TECH_SUFFIXES: [char; 12] = ['화', '율', '성', '도', '적', '론', '법', '형', '식', '계', '기', '학'];
+    const TECH_SUFFIXES: [char; 12] = [
+        '화', '율', '성', '도', '적', '론', '법', '형', '식', '계', '기', '학',
+    ];
     let trimmed = word.trim_matches(|c: char| !c.is_alphanumeric() && !('가'..='힣').contains(&c));
     if trimmed.is_empty() {
         return false;
@@ -616,7 +664,11 @@ fn is_technical_word(word: &str) -> bool {
     if ascii_letters >= 3 && ascii_letters == trimmed.chars().count() {
         return true; // English word of 3+ letters (e.g. LLM, API)
     }
-    trimmed.chars().last().map(|c| TECH_SUFFIXES.contains(&c)).unwrap_or(false)
+    trimmed
+        .chars()
+        .last()
+        .map(|c| TECH_SUFFIXES.contains(&c))
+        .unwrap_or(false)
 }
 
 fn korean_readability(body: &str) -> Option<f64> {
@@ -702,7 +754,8 @@ mod tests {
 
     #[test]
     fn link_scan_separates_images_and_links() {
-        let links = scan_links("body ![alt text](img.png) and [internal](/a) [external](https://ex.com)");
+        let links =
+            scan_links("body ![alt text](img.png) and [internal](/a) [external](https://ex.com)");
         assert_eq!(links.len(), 3);
         assert!(links[0].is_image);
     }
@@ -732,12 +785,16 @@ mod tests {
 
     #[test]
     fn front_matter_parses_with_crlf() {
-        let doc = "---\r\ntitle: \"Hello\"\r\nmeta_description: \"Description\"\r\n---\r\n# H1\r\nBody";
+        let doc =
+            "---\r\ntitle: \"Hello\"\r\nmeta_description: \"Description\"\r\n---\r\n# H1\r\nBody";
         let (t, m, b) = parse_front_matter(doc);
         assert_eq!(t.as_deref(), Some("Hello"));
         assert_eq!(m.as_deref(), Some("Description"));
         assert!(b.contains("H1"), "{b:?}");
-        assert!(!b.contains("title:"), "front matter lines must not leak into the body: {b:?}");
+        assert!(
+            !b.contains("title:"),
+            "front matter lines must not leak into the body: {b:?}"
+        );
     }
 
     #[test]
@@ -753,7 +810,10 @@ mod tests {
     #[test]
     fn internal_url_spoofing_is_rejected() {
         assert!(!is_internal_url("https://notexample.com/a", "example.com"));
-        assert!(!is_internal_url("https://example.com.evil.com/a", "example.com"));
+        assert!(!is_internal_url(
+            "https://example.com.evil.com/a",
+            "example.com"
+        ));
         assert!(is_internal_url("https://example.com/a", "example.com"));
         assert!(is_internal_url("https://blog.example.com/a", "example.com"));
         assert!(is_internal_url("/relative/path", "example.com"));
@@ -799,7 +859,8 @@ mod tests {
 
     #[test]
     fn unquote_handles_bare_value() {
-        let doc = "---\ntitle: Title without quotes\nmeta_description: \"Description\"\n---\n# H1\nBody";
+        let doc =
+            "---\ntitle: Title without quotes\nmeta_description: \"Description\"\n---\n# H1\nBody";
         let (t, _, _) = parse_front_matter(doc);
         assert_eq!(t.as_deref(), Some("Title without quotes"));
     }
