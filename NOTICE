@@ -1,0 +1,39 @@
+seo-loop
+Copyright 2026 kimdzhekhon
+
+This product is distributed under the Apache License, Version 2.0.
+
+---
+
+Third-party logic included (rewritten, no code copy-paste)
+---------------------------------------------
+
+The readability (Flesch Reading Ease / Flesch-Kincaid Grade) calculation logic in
+src/checks.rs was newly written in Rust, based on the algorithm structure (Markdown
+stripping → sentence/word splitting → syllable-count estimation → applying the Flesch
+formula) of the open-source project below. No original code was copied; only the
+standard Flesch-Kincaid formula and an approximate syllable-counting heuristic were
+ported.
+
+- Project: BlogPilot Open Source AI SEO Content Studio
+  (IamRamgarhia/BlogPilot-Open-Source-AI-SEO-Content-Studio)
+- File: src/lib/seo/readability.ts
+- License: MIT
+- URL: https://github.com/IamRamgarhia/BlogPilot-Open-Source-AI-SEO-Content-Studio
+
+The same repository's src/lib/methodologies/eeat-checklist.md (an E-E-A-T checklist,
+a general methodology description not subject to copyright protection) was used only
+as an idea reference when designing checks.rs's citation-link check and score.rs's
+scoring-rubric guidance text (no code involved, wording rewritten).
+
+The same repository's src/checks.rs::paragraph_length_issues() referenced the idea
+behind CyberCraftBD/power-seo's (MIT) paragraph-length.ts (flagging overly long
+paragraphs). The original uses an English word-count threshold (120-150 words), but
+since this project also handles non-English content such as Korean, it was
+independently redesigned around a character-count threshold (600 characters) — neither
+was the code copy-pasted nor was the original threshold carried over as-is.
+
+The same repository's src/lib/seo/tfidf.ts (TF-IDF keyword extraction) was reviewed
+but not ported. This logic requires a corpus of competitors' top-ranking documents,
+but since this CLI is a single-document generation/scoring tool with no way to obtain
+a comparison corpus, it was excluded from porting (see README Limitations).

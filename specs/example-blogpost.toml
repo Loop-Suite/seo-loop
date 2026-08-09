@@ -1,0 +1,59 @@
+name = "Blog Post (Example Spec)"
+context = """
+A blog for a small-to-mid-size e-commerce brand's own online store. Readers are prospective customers weighing a purchase.
+Prioritizes real usage experience and concrete numbers over jargon.
+"""
+keyword = "best running shoes"
+scoring_source = "General on-page SEO practice (title/meta length, heading hierarchy, E-E-A-T) — not a specific platform's or algorithm's published scoring rubric. Actual per-site ranking-factor weights may vary."
+site_domain = "example.com"
+
+title_min = 50
+title_max = 60
+meta_min = 120
+meta_max = 160
+internal_links_min = 3
+internal_links_max = 5
+min_citations = 1
+
+angles = [
+  "Lead with a step-by-step how-to guide format that foregrounds the order of actions.",
+  "Use a listicle format that lays out comparison items for easy skimming.",
+  "Foreground credibility through real wear-test reviews and data.",
+]
+
+[[sections]]
+id = "intro"
+title = "Introduction"
+guide = "State in the first paragraph who this is for and what problem it solves. Include the keyword naturally."
+required = true
+
+[[sections]]
+id = "faq"
+title = "Frequently Asked Questions"
+guide = "Cover 3-5 common pre-purchase questions in Q&A format (aimed at surfacing an FAQ snippet)."
+required = false
+
+[[criteria]]
+id = "search_intent_match"
+name = "Search Intent Match"
+weight = 0.30
+guide = "Does the content match this keyword's actual search intent — informational, commercial, or transactional? Does it quickly give searchers the answer they want?"
+
+[[criteria]]
+id = "keyword_naturalness"
+name = "Keyword Naturalness"
+weight = 0.20
+guide = "Are the keyword and related terms used naturally in context? No forced repetition (keyword stuffing) or awkward insertion?"
+
+[[criteria]]
+id = "eeat_signals"
+name = "E-E-A-T Signals"
+weight = 0.25
+guide = "Is there first-person experience (use/wear/test reviews), concrete figures, expert-level explanation, and citations to credible sources?"
+citation_required = true
+
+[[criteria]]
+id = "structure_readability"
+name = "Structure & Readability"
+weight = 0.25
+guide = "Is the heading hierarchy logical, are paragraphs easy to scan, and are lists/subheadings used appropriately?"
