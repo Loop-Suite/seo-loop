@@ -6,10 +6,11 @@ actually run — as opposed to what a design doc claims should happen. Same spir
 real numbers from real work, not estimates, with the caveats stated plainly.
 
 This repo has no `promptfoo` golden-set harness (that's Code-Review-Loop's own eval scaffold,
-not something this project has). What's documented here instead is three rounds of actual review
-work against this codebase — two static code-review passes and one live CLI execution pass — all
-performed in a single review session on 2026-08-09/10, with every issue filed also fixed and
-verified in this same session.
+not something this project has). What's documented here instead is five rounds of actual review
+work against this codebase — three static code-review passes and two live CLI execution passes.
+Rounds 1-3 were performed in a single review session on 2026-08-09/10; Rounds 4-5 in a follow-up
+hardening session on 2026-08-10, targeting v0.1.0. Every issue filed in every round was also fixed
+and verified in the same session it was filed in.
 
 ## TL;DR
 
@@ -18,7 +19,9 @@ verified in this same session.
 | 1. Static review | manual code reading, no LLM calls | #2, #3, #4, #5 (4) | 4/4 | $0 |
 | 2. Deeper static review | manual code reading, no LLM calls | #6, #7, #8 (3) | 3/3 | $0 |
 | 3. Real CLI execution | `claude -p --model haiku` via `seo gen` (2 real generations) | #9 (1) | 1/1 | $0.3941 |
-| **Total** | | **8** | **8/8** | **$0.3941** |
+| 4. Adversarial re-audit (v0.1.0) | manual code reading, no LLM calls | #15, #16, #17 (3) | 3/3 | $0 |
+| 5. Real CLI execution (v0.1.0), different spec/brief | `claude -p --model haiku` via `seo gen` (2 real generations) | none — clean | n/a | $0.2388 |
+| **Total** | | **11** | **11/11** | **$0.6329** |
 
 **What this bought:**
 
@@ -229,14 +232,108 @@ produced English drafts with no Korean-forcing regression.
 parameters — `Cumulative API cost: $0.2193` (from `runs/blog-verify/report.md`). **Total: $0.3941**
 across the two real `claude -p` calls this round required.
 
+## Round 4: adversarial re-audit for v0.1.0 — 3 issues (#15-#17)
+
+A follow-up, deliberately adversarial static pass (2026-08-10) targeting the v0.1.0 hardening
+release — re-examining `strip_wrapping_fence()` and `checks.rs` as if seeing them for the first
+time, specifically hunting for fence variants #9's fix didn't cover, URL scheme cases #6's fix
+didn't cover, and resource-exhaustion vectors. All three findings confirmed by reading the code and
+reproducing with a standalone repro before filing — no LLM calls, no cost.
+
+### #15 — `strip_wrapping_fence()` doesn't recognize variable-length (4+ backtick) fence markers
+
+Only recognized an outer wrapper delimited by exactly three backticks. CommonMark's own way to wrap
+content that itself already contains a ` ``` ` code block is to use 4+ backticks for the outer
+fence — exactly the "fence within fence" case, and exactly the shape a model would reach for if it
+both (still) wraps its whole answer *and* the body legitimately contains a real code sample.
+Reproduced: a 4-backtick-wrapped document containing a real ` ```rust ` sample was left completely
+unstripped, reproducing #9's exact breakage (front matter undetected, Flesch null) in precisely the
+scenario the #9 fix was meant to cover.
+
+Fixed in `20bc846`: both the open- and close-fence checks now count the actual backtick run length
+(3+) and require the closer's run to be at least as long as the opener's, per CommonMark's own
+fence-closing rule.
+
+### #16 — `is_internal_url()` doesn't normalize backslashes, missing a browser-equivalent #6 variant
+
+#6 fixed protocol-relative URLs (`//evil.example.org/a`). But browsers (WHATWG URL Standard) treat
+`\` identically to `/` for http(s) URLs — a well-known URL-filter-bypass trick — so backslash
+variants (`\\evil.example.org/a`, `/\evil.example.org/a`, `\/evil.example.org/a`) still reached the
+same "no scheme -> internal" default #6 closed for the forward-slash form. Also found, same pass:
+`scan_links()` extracts the raw substring between `(`/`)` verbatim, so a destination with padding
+inside the parens (`[text]( https://evil.com )`) carried a leading space that defeated the prefix
+match the same way.
+
+Fixed in `0f6c900`: `is_internal_url()` now trims whitespace and normalizes `\` to `/` before the
+existing scheme/host checks.
+
+### #17 — `scan_links()` is O(n²) worst case, a real CPU-exhaustion DoS
+
+`find_matching_bracket_close()`/`find_char()` each did fresh forward scans — potentially to the end
+of the document — from every candidate `[` and every matched `](`. A document that's just repeated
+`[` (no `]` anywhere), or many `[a](` groups (no `)` anywhere), made the whole function O(n²).
+Measured with a standalone repro of the same algorithm (release build) before filing:
+
+| n (chars) | time |
+|---|---|
+| 10,000 | 55ms |
+| 20,000 | 135ms |
+| 40,000 | 527ms |
+| 80,000 | 2.03s |
+
+Time roughly quadruples as n doubles — textbook O(n²). Since `seo score`/`seo gen` run this over
+arbitrary documents, this is a real DoS, not a theoretical one.
+
+Fixed in `187a55c`: both helpers replaced with a single O(n) precomputation each — `match_brackets()`
+(stack-based, same nesting/escape semantics) and `next_close_paren()` — done once at the top of
+`scan_links()` instead of repeated from every candidate position.
+
+All three fixed, verified (`cargo build`/`cargo test`, 31→39 tests/`cargo clippy`/`cargo fmt`), and
+pushed in the same session. A follow-up pass then expanded edge-case coverage (39→73 tests: empty
+input, huge/adversarial documents, further fence variants, further URL scheme extremes) without
+finding further issues.
+
+## Round 5: real CLI execution for v0.1.0, different spec/brief — 0 issues, real cost $0.2388
+
+Round 3's live-execution finding (#9) came from running the real pipeline once. To check whether
+the #9/#15 fence-wrapping bug actually stays fixed — and whether anything new turns up — against a
+model's live output rather than just hand-written test cases, ran the real pipeline again
+(2026-08-10) against a **different spec/brief pair** than Round 3 reused: a developer-tutorial topic
+(rate limiting API requests) whose brief deliberately asks for a runnable code sample, specifically
+to exercise the #15 "genuine internal code fence" scenario against a live model, not just a
+hand-written test string.
+
+```
+./target/release/seo --model haiku --judge-model haiku gen \
+  --spec specs/verify-devtutorial.toml --brief brief-verify-devtutorial.md \
+  -n 2 --rounds 1 --concurrency 1 --out runs/verify-v0.1.0
+```
+
+**Result: clean, no new issues.**
+
+- Both real haiku generations started directly with `---` — no stray outer fence. `title_chars`/
+  `meta_chars` correctly populated (60/145 and 57/147), `flesch_reading_ease` correctly computed
+  (49.0 and 57.0), neither null.
+- Both documents contained a genuine, correctly-closed ` ```python ` code sample (as the brief
+  asked for) — preserved intact in the saved output, not mangled and not mistaken for an outer
+  wrapper by `strip_wrapping_fence()`.
+- The only `format_issues` raised (3-4 H1 headings instead of exactly one; one candidate's section
+  not literally titled "Introduction") are genuine content misses by the model, correctly caught by
+  the deterministic checks — not tool bugs.
+
+**Real cost:** `Cumulative API cost: $0.2388` (2 generations + 2 judge-scoring rounds, haiku/haiku).
+
+Spec/brief/run output for this round are not committed, consistent with `runs/` being gitignored
+and not force-added for Rounds 1-3 either — the numbers above are the full record.
+
 ## Caveats
 
 - This is not a golden-set benchmark like Code-Review-Loop's `evals/` — no fixed diff corpus, no
-  automated pass/fail grading, no CI wiring. It is a record of one review session's actual findings
-  and one pipeline's actual execution, at n=1 for the live-execution round.
-- Round 3 exercised exactly one model (`haiku`) and one spec/brief pair (the bundled quickstart
-  example). Whether other models wrap responses in stray fences the same way, or whether other
-  specs trigger different failure modes, is untested here.
-- Rounds 1 and 2 were manual code review, not an automated static-analysis tool — thorough for the
-  bug classes actually looked for (substring/boundary/case-sensitivity issues), but not exhaustive
-  by construction.
+  automated pass/fail grading, no CI wiring. It is a record of review sessions' actual findings and
+  two pipeline executions' actual output, at n=1 per live-execution round.
+- Rounds 3 and 5 together exercise exactly one model (`haiku`) across two spec/brief pairs. Whether
+  other models wrap responses in stray fences the same way, or whether other specs trigger
+  different failure modes, remains untested beyond those two pairs.
+- Rounds 1, 2, and 4 were manual code review, not an automated static-analysis tool — thorough for
+  the bug classes actually looked for (substring/boundary/case-sensitivity/complexity/host-spoofing
+  issues), but not exhaustive by construction.
