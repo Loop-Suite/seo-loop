@@ -199,7 +199,7 @@ impl Llm {
     /// Generate text.
     pub fn text(&self, prompt: &str, system: Option<&str>) -> Result<String> {
         let r = self.with_retry("generate", || self.call_once(prompt, system, None))?;
-        Ok(r.text)
+        Ok(strip_wrapping_fence(&r.text))
     }
 
     /// Structured generation enforcing a JSON Schema. Schema validation is performed by the claude CLI, and
@@ -219,6 +219,44 @@ impl Llm {
             }
         })
     }
+}
+
+/// Strips a stray outer ```/```lang ... ``` wrapper around an entire text response, if present.
+///
+/// Some models wrap the whole document (frontmatter + body) in a single code fence despite being
+/// told to output only the document body — possibly primed by build_prompt()'s own frontmatter
+/// example, which is itself shown inside a ``` fence. Left unstripped, this breaks
+/// checks::parse_front_matter() (which requires the document to start with "---") and
+/// checks::readability() (whose strip_markdown_to_prose() treats the whole body as one open code
+/// fence, since it never sees a closing fence to pair with the opening one, and drops all of it).
+///
+/// Mirrors the tolerance extract_json() already has for the JSON path (fixes #9). Deliberately
+/// conservative: only strips when the *entire* trimmed response is bounded by a single matching
+/// fence pair (first line is exactly "```" or "```lang", last line is exactly "```"), so a fence
+/// that legitimately appears inside real content (e.g. a code sample partway through the doc) is
+/// left alone.
+fn strip_wrapping_fence(text: &str) -> String {
+    let trimmed = text.trim();
+    let mut lines = trimmed.lines();
+    let Some(first) = lines.next() else {
+        return text.to_string();
+    };
+    let first = first.trim();
+    let is_open_fence = first == "```"
+        || (first.len() > 3
+            && first.starts_with("```")
+            && first[3..].chars().all(|c| c.is_ascii_alphanumeric()));
+    if !is_open_fence {
+        return text.to_string();
+    }
+    let rest: Vec<&str> = lines.collect();
+    let Some(last) = rest.last() else {
+        return text.to_string();
+    };
+    if last.trim() != "```" {
+        return text.to_string();
+    }
+    rest[..rest.len() - 1].join("\n")
 }
 
 /// Extracts only the JSON object from a response mixed with code fences/chatter (fallback path).
@@ -251,5 +289,45 @@ pub fn truncate(s: &str, n: usize) -> String {
         s.to_string()
     } else {
         s.chars().take(n).collect::<String>() + "…"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn strip_wrapping_fence_removes_plain_fence() {
+        let raw = "```\n---\ntitle: \"x\"\n---\n\n# H1\n\nbody\n```";
+        assert_eq!(
+            strip_wrapping_fence(raw),
+            "---\ntitle: \"x\"\n---\n\n# H1\n\nbody"
+        );
+    }
+
+    #[test]
+    fn strip_wrapping_fence_removes_language_tagged_fence() {
+        let raw = "```markdown\n---\ntitle: \"x\"\n---\n\nbody\n```";
+        assert_eq!(strip_wrapping_fence(raw), "---\ntitle: \"x\"\n---\n\nbody");
+    }
+
+    #[test]
+    fn strip_wrapping_fence_leaves_untouched_when_not_wrapped() {
+        let raw = "---\ntitle: \"x\"\n---\n\nbody with a ```code``` span";
+        assert_eq!(strip_wrapping_fence(raw), raw);
+    }
+
+    #[test]
+    fn strip_wrapping_fence_leaves_untouched_when_only_opening_fence() {
+        // Unclosed fence: don't guess, leave as-is (front_matter_unclosed etc. handle it elsewhere).
+        let raw = "```\n---\ntitle: \"x\"\n---\n\nbody";
+        assert_eq!(strip_wrapping_fence(raw), raw);
+    }
+
+    #[test]
+    fn strip_wrapping_fence_leaves_untouched_when_internal_fence_present() {
+        // A real embedded code block inside otherwise unwrapped content must survive untouched.
+        let raw = "---\ntitle: \"x\"\n---\n\nExample:\n```rust\nfn main() {}\n```\n\nmore text";
+        assert_eq!(strip_wrapping_fence(raw), raw);
     }
 }
