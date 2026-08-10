@@ -269,6 +269,18 @@ fn contains_kw(haystack: &str, keyword: &str) -> bool {
     count_kw_occurrences(haystack, keyword) > 0
 }
 
+/// Whether `needle`'s word tokens appear as a contiguous run within `hay`'s word tokens
+/// (word-boundary respecting containment, same rationale as `tokenize_kw`/`count_kw_occurrences`:
+/// a raw substring check on whitespace-stripped text lets an unrelated short word accidentally match
+/// inside a longer title, e.g. a heading "As" should not satisfy a required section titled
+/// "Frequently Asked Questions" just because "as" is a literal substring of "frequentlyaskedquestions").
+fn tokens_contain(hay: &[String], needle: &[String]) -> bool {
+    if needle.is_empty() || hay.len() < needle.len() {
+        return false;
+    }
+    hay.windows(needle.len()).any(|w| w == needle)
+}
+
 /// Number of (non-overlapping) occurrences of keyword within the haystack, matched as a
 /// contiguous run of word tokens rather than a raw substring (word-boundary respecting).
 fn count_kw_occurrences(haystack: &str, keyword: &str) -> usize {
@@ -375,23 +387,20 @@ pub fn metrics(doc: &str, spec: &Spec) -> Metrics {
 pub fn missing_sections(spec: &Spec, doc: &str) -> Vec<String> {
     let (_, _, body) = parse_front_matter(doc);
     let heads = headings(body);
-    // Case-insensitive, like tokenize_kw()/contains_kw() elsewhere in this file (fixes #4: this
-    // used to only strip whitespace, so a heading like "## faq" would not match a spec section
-    // titled "FAQ" and was incorrectly reported as missing).
-    let norm = |s: &str| {
-        s.chars()
-            .filter(|c| !c.is_whitespace())
-            .collect::<String>()
-            .to_lowercase()
-    };
+    // Word-token matching, case-insensitive, like tokenize_kw()/contains_kw() elsewhere in this
+    // file (fixes #4: case-insensitive so "## faq" matches a spec section titled "FAQ"; fixes #7:
+    // word-boundary respecting so an unrelated short heading like "## As" can no longer satisfy a
+    // required section titled "Frequently Asked Questions" just because "as" is a literal substring
+    // of the whitespace-stripped title — the same false-positive class fixed for keyword matching
+    // in #3, applied here too).
     spec.sections
         .iter()
         .filter(|s| s.required)
         .filter(|s| {
-            let want = norm(&s.title);
+            let want = tokenize_kw(&s.title);
             !heads.iter().any(|(_, h)| {
-                let hn = norm(h);
-                !hn.is_empty() && (hn.contains(&want) || want.contains(&hn))
+                let hn = tokenize_kw(h);
+                !hn.is_empty() && (tokens_contain(&hn, &want) || tokens_contain(&want, &hn))
             })
         })
         .map(|s| s.title.clone())
@@ -952,6 +961,26 @@ mod tests {
         assert!(
             missing_sections(&spec, doc).is_empty(),
             "'## faq' heading should satisfy a required section titled 'FAQ'"
+        );
+    }
+
+    #[test]
+    fn missing_sections_rejects_unrelated_substring_match() {
+        // Regression test for #7: whitespace-stripped substring containment used to let an
+        // unrelated short heading satisfy a much longer required section title just because its
+        // normalized text happened to appear as a literal substring ("as" inside
+        // "frequentlyaskedquestions"). Word-boundary matching must not count this as a match.
+        let mut spec = test_spec();
+        spec.sections = vec![Section {
+            id: "faq".into(),
+            title: "Frequently Asked Questions".into(),
+            guide: String::new(),
+            required: true,
+        }];
+        let doc = "---\ntitle: \"A complete, detailed guide to choosing running shoes\"\nmeta_description: \"A very detailed and helpful explanation of how to choose running shoes, long enough\"\n---\n# How to choose running shoes\nBody text.\n\n## As\nUnrelated content with nothing to do with FAQs.\n";
+        assert!(
+            !missing_sections(&spec, doc).is_empty(),
+            "an unrelated 'As' heading must not satisfy a required 'Frequently Asked Questions' section"
         );
     }
 
