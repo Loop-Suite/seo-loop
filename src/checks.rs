@@ -142,9 +142,17 @@ pub struct MdLink {
 /// Manually scans markdown images (`![alt](url)`) / links (`[text](url)`) without regex.
 /// Tracks nested `[...]` inside the label (e.g. `[a[b]c](url)`) by depth to find the matching `]`,
 /// and does not count escaped `\[`/`\]` as brackets.
+///
+/// Bracket and closing-paren positions are precomputed once, in two linear passes, rather than
+/// doing a fresh forward scan (potentially to the end of the document) from every `[` and every
+/// matched `](` (fixes #17: the old repeated-scan approach was O(n²) on adversarial input — e.g. a
+/// document that's just repeated `[` with no `]` anywhere, or repeated `[a](` groups with no `)`
+/// anywhere — a real CPU-exhaustion DoS, since `seo score` runs this over arbitrary documents).
 pub fn scan_links(text: &str) -> Vec<MdLink> {
     let chars: Vec<char> = text.chars().collect();
     let n = chars.len();
+    let closes = match_brackets(&chars);
+    let next_paren = next_close_paren(&chars);
     let mut out = Vec::new();
     let mut i = 0usize;
     while i < n {
@@ -155,9 +163,9 @@ pub fn scan_links(text: &str) -> Vec<MdLink> {
         let is_image = chars[i] == '!' && i + 1 < n && chars[i + 1] == '[';
         let bracket_start = if is_image { i + 1 } else { i };
         if chars[i] == '[' || is_image {
-            if let Some(close) = find_matching_bracket_close(&chars, bracket_start + 1) {
+            if let Some(close) = closes[bracket_start] {
                 if close + 1 < n && chars[close + 1] == '(' {
-                    if let Some(paren_close) = find_char(&chars, close + 2, ')') {
+                    if let Some(paren_close) = next_paren.get(close + 2).copied().flatten() {
                         let label: String = chars[bracket_start + 1..close].iter().collect();
                         let url: String = chars[close + 2..paren_close].iter().collect();
                         out.push(MdLink {
@@ -176,33 +184,49 @@ pub fn scan_links(text: &str) -> Vec<MdLink> {
     out
 }
 
-fn find_char(chars: &[char], from: usize, target: char) -> Option<usize> {
-    (from..chars.len()).find(|&j| chars[j] == target)
-}
-
-/// Starting right after `[` (at `from`), tracks nested `[...]` by depth to find the matching `]`.
-/// Does not count `\]`/`\[` as brackets (escaped).
-fn find_matching_bracket_close(chars: &[char], from: usize) -> Option<usize> {
-    let mut depth = 1i32;
-    let mut j = from;
-    while j < chars.len() {
-        if chars[j] == '\\' && j + 1 < chars.len() {
+/// For every unescaped `[` in `chars`, the index of its matching unescaped `]` (properly-nested,
+/// innermost-first — equivalent to the old per-position depth-counting scan, just computed once
+/// in a single O(n) left-to-right pass via a stack instead of independently re-scanning from every
+/// candidate start). Does not count `\]`/`\[` as brackets (escaped), matching prior behavior.
+fn match_brackets(chars: &[char]) -> Vec<Option<usize>> {
+    let n = chars.len();
+    let mut closes: Vec<Option<usize>> = vec![None; n];
+    let mut stack: Vec<usize> = Vec::new();
+    let mut j = 0usize;
+    while j < n {
+        if chars[j] == '\\' && j + 1 < n {
             j += 2;
             continue;
         }
         match chars[j] {
-            '[' => depth += 1,
+            '[' => stack.push(j),
             ']' => {
-                depth -= 1;
-                if depth == 0 {
-                    return Some(j);
+                if let Some(open) = stack.pop() {
+                    closes[open] = Some(j);
                 }
             }
             _ => {}
         }
         j += 1;
     }
-    None
+    closes
+}
+
+/// For every position, the index of the nearest `)` at or after it (or `None`). No escape
+/// handling, matching the literal-scan semantics of the `find_char` helper this replaces.
+/// Precomputed once in a single O(n) right-to-left pass instead of a fresh forward scan —
+/// potentially to the end of the document — from every matched `](`.
+fn next_close_paren(chars: &[char]) -> Vec<Option<usize>> {
+    let n = chars.len();
+    let mut next: Vec<Option<usize>> = vec![None; n];
+    let mut last: Option<usize> = None;
+    for i in (0..n).rev() {
+        if chars[i] == ')' {
+            last = Some(i);
+        }
+        next[i] = last;
+    }
+    next
 }
 
 /// Determines whether an absolute URL's host is exactly `site_domain` or one of its subdomains.
@@ -825,6 +849,23 @@ mod tests {
         assert_eq!(links.len(), 1, "{links:?}");
         assert_eq!(links[0].label, "a[b]c");
         assert_eq!(links[0].url, "https://ex.com");
+    }
+
+    #[test]
+    fn link_scan_handles_many_unmatched_brackets_without_hanging() {
+        // Regression test for #17: this shape (long run of unmatched `[`) used to be O(n²) via
+        // find_matching_bracket_close's repeated re-scanning. Correctness check here; a timing
+        // bound at larger scale lives in the huge-document edge-case tests.
+        let doc = "[".repeat(20_000);
+        assert!(scan_links(&doc).is_empty());
+    }
+
+    #[test]
+    fn link_scan_handles_many_unclosed_parens_without_hanging() {
+        // Regression test for #17's second trigger: many `[a](` groups with no `)` anywhere used
+        // to make find_char re-scan to the end of the document on every group.
+        let doc = "[a](".repeat(20_000);
+        assert!(scan_links(&doc).is_empty());
     }
 
     #[test]
