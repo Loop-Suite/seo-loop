@@ -5,6 +5,15 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Security
+
+- #19 — `--count` (`seo gen`) and `--rounds` (`seo gen`/`seo score`/`seo loop`) now reject
+  out-of-range values (`1..=20` and `1..=10` respectively) right after CLI parsing, before any
+  real (billed) LLM call is made. Both previously accepted any `usize` with no upper bound, so an
+  abnormally large value drove an unbounded number of billed `claude -p` invocations.
+
 ## [0.1.0] - 2026-08-10
 
 Initial release.

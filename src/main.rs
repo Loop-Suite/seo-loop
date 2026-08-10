@@ -14,6 +14,34 @@ use spec::Spec;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+/// Upper bound on `--count` (documents generated per `seo gen` invocation). Each document costs
+/// one real (billed) generation LLM call. Without a cap, a typo'd extra zero (or a careless
+/// invocation) turns one CLI call into an unbounded number of API calls with no confirmation step.
+/// 20 is far beyond any real use case (the default is 3).
+const MAX_COUNT: usize = 20;
+
+/// Upper bound on `--rounds` (scoring rounds per document, shared by `gen`/`score`/`loop`). Each
+/// round costs one real (billed) judge LLM call per document, so this multiplies directly with
+/// `--count`/input size. Same rationale as `MAX_COUNT`. 10 is far beyond any real use case (the
+/// default is 2).
+const MAX_ROUNDS: usize = 10;
+
+/// Validates `--count`/`--rounds` against `MAX_COUNT`/`MAX_ROUNDS` before any LLM call is made.
+/// `count` is `None` for subcommands that don't take it (`Score`/`Loop`).
+fn validate_call_bounds(count: Option<usize>, rounds: usize) -> Result<()> {
+    if let Some(c) = count {
+        anyhow::ensure!(
+            (1..=MAX_COUNT).contains(&c),
+            "count out of range ({c}, must be 1..={MAX_COUNT}) — would trigger too many real LLM calls"
+        );
+    }
+    anyhow::ensure!(
+        (1..=MAX_ROUNDS).contains(&rounds),
+        "rounds out of range ({rounds}, must be 1..={MAX_ROUNDS}) — would trigger too many real LLM calls"
+    );
+    Ok(())
+}
+
 #[derive(Parser, Debug)]
 #[command(
     name = "seo",
@@ -169,6 +197,12 @@ fn judge_model_matches_gen(model: Option<&str>, judge_model: Option<&str>) -> bo
 
 fn real_main() -> Result<()> {
     let cli = Cli::parse();
+    // Reject an oversized --count/--rounds immediately, before any real (billed) LLM call is made.
+    match &cli.cmd {
+        Cmd::Gen { count, rounds, .. } => validate_call_bounds(Some(*count), *rounds)?,
+        Cmd::Score { rounds, .. } => validate_call_bounds(None, *rounds)?,
+        Cmd::Loop { rounds, .. } => validate_call_bounds(None, *rounds)?,
+    }
     let gen_llm = build_llm(&cli, cli.model.clone());
     let judges = judge_panel(&cli);
     // Warn on self-scoring both when --judge-model is omitted (implicitly reuses --model) and
@@ -475,5 +509,49 @@ mod tests {
         assert!(!judge_model_matches_gen(Some("opus"), Some("sonnet,haiku")));
         assert!(!judge_model_matches_gen(None, Some("sonnet")));
         assert!(!judge_model_matches_gen(Some("sonnet"), None));
+    }
+
+    // Regression for #19: --count/--rounds were plain usize CLI args with no upper bound, so an
+    // abnormally large value (typo'd extra zero, or worse) was executed as-is, triggering an
+    // unbounded number of real (billed) LLM calls with no confirmation step.
+
+    #[test]
+    fn validate_call_bounds_accepts_defaults() {
+        // seo gen defaults: count=3, rounds=2.
+        assert!(validate_call_bounds(Some(3), 2).is_ok());
+        // seo score/loop defaults: rounds=2, no count.
+        assert!(validate_call_bounds(None, 2).is_ok());
+    }
+
+    #[test]
+    fn validate_call_bounds_accepts_boundary_values() {
+        assert!(validate_call_bounds(Some(MAX_COUNT), 1).is_ok());
+        assert!(validate_call_bounds(Some(1), MAX_ROUNDS).is_ok());
+    }
+
+    #[test]
+    fn validate_call_bounds_rejects_oversized_count() {
+        let err = validate_call_bounds(Some(MAX_COUNT + 1), 1)
+            .expect_err("count above MAX_COUNT must be rejected");
+        assert!(err.to_string().contains("count out of range"));
+
+        // A typo'd extra zero — the exact scenario the audit flagged.
+        assert!(validate_call_bounds(Some(30_000), 1).is_err());
+    }
+
+    #[test]
+    fn validate_call_bounds_rejects_oversized_rounds() {
+        let err = validate_call_bounds(None, MAX_ROUNDS + 1)
+            .expect_err("rounds above MAX_ROUNDS must be rejected");
+        assert!(err.to_string().contains("rounds out of range"));
+
+        assert!(validate_call_bounds(Some(3), 30_000).is_err());
+    }
+
+    #[test]
+    fn validate_call_bounds_rejects_zero() {
+        // 0 documents / 0 scoring rounds isn't a meaningful invocation either.
+        assert!(validate_call_bounds(Some(0), 2).is_err());
+        assert!(validate_call_bounds(Some(3), 0).is_err());
     }
 }
