@@ -238,8 +238,19 @@ fn next_close_paren(chars: &[char]) -> Vec<Option<usize>> {
 /// `ftp:`, etc.) is external — it is not a same-site relative path just because it isn't `http(s)://`
 /// (fixes #6: these used to fall through to the "no scheme -> relative path" default and were
 /// misclassified as internal).
+///
+/// Whitespace is trimmed and `\` is normalized to `/` before classification (fixes #16). Browsers
+/// (per the WHATWG URL Standard) treat `\` identically to `/` when parsing a "special"-scheme URL,
+/// which includes http/https — a well-known source of URL-filter bypasses — so `\\evil.example.org/a`,
+/// `/\evil.example.org/a`, and `\/evil.example.org/a` all resolve, once actually rendered, to the
+/// same external host a literal `//evil.example.org/a` would (the exact case #6 already fixed).
+/// Without normalizing first, none of the backslash variants match the literal `https://`/`http://`/`//`
+/// prefix checks below, so they fell through to the same "no scheme -> internal" default #6 closed
+/// for the forward-slash form. Trimming also closes a related gap: `scan_links()` extracts the raw
+/// substring between `(`/`)` verbatim, so a destination written with padding inside the parens (e.g.
+/// `[text]( https://evil.com )`) carries a leading space that likewise defeats the prefix match.
 fn is_internal_url(url: &str, site_domain: &str) -> bool {
-    let low = url.to_lowercase();
+    let low = url.trim().to_lowercase().replace('\\', "/");
     let after_scheme = low
         .strip_prefix("https://")
         .or_else(|| low.strip_prefix("http://"))
@@ -934,6 +945,28 @@ mod tests {
         assert!(is_internal_url("/relative/path", "example.com"));
         assert!(is_internal_url("relative/page.html", "example.com"));
         assert!(is_internal_url("#anchor", "example.com"));
+    }
+
+    #[test]
+    fn backslash_protocol_relative_urls_are_not_internal() {
+        // Regression test for #16: browsers normalize `\` to `/` for http(s) URLs, so these are
+        // browser-equivalent to the plain `//evil.example.org/a` case #6 already rejects.
+        assert!(!is_internal_url(r"\\evil.example.org/a", "example.com"));
+        assert!(!is_internal_url(r"/\evil.example.org/a", "example.com"));
+        assert!(!is_internal_url(r"\/evil.example.org/a", "example.com"));
+        // The genuine site domain reached via a backslash variant is still internal.
+        assert!(is_internal_url(r"\\example.com/a", "example.com"));
+    }
+
+    #[test]
+    fn whitespace_padded_url_is_still_classified_correctly() {
+        // Regression test for #16: scan_links() extracts the raw text between `(`/`)`, so a
+        // destination with padding inside the parens must not defeat the prefix match.
+        assert!(!is_internal_url(
+            "  https://evil.example.org/a  ",
+            "example.com"
+        ));
+        assert!(is_internal_url("  /relative/path  ", "example.com"));
     }
 
     #[test]
