@@ -232,9 +232,17 @@ impl Llm {
 ///
 /// Mirrors the tolerance extract_json() already has for the JSON path (fixes #9). Deliberately
 /// conservative: only strips when the *entire* trimmed response is bounded by a single matching
-/// fence pair (first line is exactly "```" or "```lang", last line is exactly "```"), so a fence
-/// that legitimately appears inside real content (e.g. a code sample partway through the doc) is
-/// left alone.
+/// fence pair (first line is a run of 3+ backticks, optionally followed by a language tag; last
+/// line is a run of backticks at least as long), so a fence that legitimately appears inside real
+/// content (e.g. a code sample partway through the doc) is left alone.
+///
+/// The fence length is deliberately not hardcoded to exactly 3 backticks (fixes #15): per
+/// CommonMark, a fence that needs to wrap content which itself already contains a ``` code block
+/// uses 4+ backticks so the two don't collide — a model asked to output a document containing a
+/// real code sample, while also (still) wrapping its whole answer in an outer fence, would
+/// sensibly reach for this. The old exactly-3-backtick check silently failed to strip that case,
+/// reproducing the exact #9 breakage in precisely the "fence within fence" scenario the fix was
+/// meant to cover.
 fn strip_wrapping_fence(text: &str) -> String {
     let trimmed = text.trim();
     let mut lines = trimmed.lines();
@@ -242,10 +250,9 @@ fn strip_wrapping_fence(text: &str) -> String {
         return text.to_string();
     };
     let first = first.trim();
-    let is_open_fence = first == "```"
-        || (first.len() > 3
-            && first.starts_with("```")
-            && first[3..].chars().all(|c| c.is_ascii_alphanumeric()));
+    let open_len = first.chars().take_while(|&c| c == '`').count();
+    let is_open_fence =
+        open_len >= 3 && first[open_len..].chars().all(|c| c.is_ascii_alphanumeric());
     if !is_open_fence {
         return text.to_string();
     }
@@ -253,7 +260,12 @@ fn strip_wrapping_fence(text: &str) -> String {
     let Some(last) = rest.last() else {
         return text.to_string();
     };
-    if last.trim() != "```" {
+    let last = last.trim();
+    let close_len = last.chars().take_while(|&c| c == '`').count();
+    // A valid closer is backticks only (nothing else on the line) and at least as long as the
+    // opener — matching CommonMark's own fence-closing rule.
+    let is_close_fence = close_len >= open_len && close_len == last.len();
+    if !is_close_fence {
         return text.to_string();
     }
     rest[..rest.len() - 1].join("\n")
@@ -329,5 +341,39 @@ mod tests {
         // A real embedded code block inside otherwise unwrapped content must survive untouched.
         let raw = "---\ntitle: \"x\"\n---\n\nExample:\n```rust\nfn main() {}\n```\n\nmore text";
         assert_eq!(strip_wrapping_fence(raw), raw);
+    }
+
+    #[test]
+    fn strip_wrapping_fence_removes_four_backtick_wrapper_around_nested_fence() {
+        // Regression test for #15: a model that wraps its whole answer while the body itself
+        // legitimately contains a real ``` code sample would sensibly (per CommonMark) use 4+
+        // backticks for the outer wrapper so it doesn't collide with the inner one. The old
+        // exactly-3-backtick check silently failed to strip this, reproducing #9's breakage.
+        let raw = "````\n---\ntitle: \"x\"\n---\n\nExample:\n```rust\nfn main() {}\n```\n\nmore text\n````";
+        assert_eq!(
+            strip_wrapping_fence(raw),
+            "---\ntitle: \"x\"\n---\n\nExample:\n```rust\nfn main() {}\n```\n\nmore text"
+        );
+    }
+
+    #[test]
+    fn strip_wrapping_fence_removes_four_backtick_wrapper_with_language_tag() {
+        let raw = "````markdown\n---\ntitle: \"x\"\n---\n\nbody\n````";
+        assert_eq!(strip_wrapping_fence(raw), "---\ntitle: \"x\"\n---\n\nbody");
+    }
+
+    #[test]
+    fn strip_wrapping_fence_leaves_untouched_when_closer_is_shorter_than_opener() {
+        // A closer with fewer backticks than the opener doesn't actually close the fence per
+        // CommonMark — must not be treated as a valid wrapper boundary.
+        let raw = "````\n---\ntitle: \"x\"\n---\n\nbody\n```";
+        assert_eq!(strip_wrapping_fence(raw), raw);
+    }
+
+    #[test]
+    fn strip_wrapping_fence_accepts_longer_closer_than_opener() {
+        // A closer with more backticks than the opener is still a valid close per CommonMark.
+        let raw = "```\n---\ntitle: \"x\"\n---\n\nbody\n`````";
+        assert_eq!(strip_wrapping_fence(raw), "---\ntitle: \"x\"\n---\n\nbody");
     }
 }
