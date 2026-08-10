@@ -150,7 +150,16 @@ fn real_main() -> Result<()> {
     let cli = Cli::parse();
     let gen_llm = build_llm(&cli, cli.model.clone());
     let judges = judge_panel(&cli);
-    if cli.judge_model.is_none() {
+    // Warn on self-scoring both when --judge-model is omitted (implicitly reuses --model) and
+    // when it's explicitly given the same single model as --model (fixes #5: previously only the
+    // omitted case was detected, so `--model sonnet --judge-model sonnet` -- genuine self-scoring --
+    // silently printed no warning, contradicting the README's Limitations section).
+    let judge_model_matches_gen = cli.judge_model.as_deref().is_some_and(|j| {
+        cli.model
+            .as_deref()
+            .is_some_and(|m| j.split(',').map(str::trim).eq([m]))
+    });
+    if cli.judge_model.is_none() || judge_model_matches_gen {
         eprintln!(
             "Note: the generation model and judge model are the same. Since there's a bias toward \
              rating one's own style favorably, it's better to specify a different model with --judge-model."
