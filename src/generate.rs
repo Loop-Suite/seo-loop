@@ -9,10 +9,16 @@ concrete figures, sources). You do not exaggerate unverified figures or claims o
 effectiveness, and you attach source links to claims that have supporting evidence.";
 
 /// Initial generation prompt.
+///
+/// Deliberately does not hardcode a target language (see README "language-agnostic" claim,
+/// fixes #2): the model is asked to match whatever language the brief/spec content below is
+/// written in, rather than being forced into one language regardless of input.
 pub fn build_prompt(spec: &Spec, brief: &str, angle: &str) -> String {
     let mut p = String::new();
     p.push_str(
-        "# Task\nWrite an SEO content draft in Korean according to the conditions below.\n\n",
+        "# Task\nWrite an SEO content draft according to the conditions below. Write in the \
+         same language as the content brief and spec content provided below (do not default to \
+         a fixed language).\n\n",
     );
     p.push_str(&format!(
         "## Content type: {}\n{}\n\n",
