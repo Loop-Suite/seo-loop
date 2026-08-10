@@ -889,7 +889,10 @@ mod tests {
         // adjacent words accidentally spell out the keyword ("running shoe" + "sale" -> contains
         // "shoesale" -> contains "shoes"). Word-boundary matching must not count this as a match.
         let body = "This is a running shoe sale event.";
-        assert!(!contains_kw(body, "running shoes"), "false positive across word boundary");
+        assert!(
+            !contains_kw(body, "running shoes"),
+            "false positive across word boundary"
+        );
         assert_eq!(count_kw_occurrences(body, "running shoes"), 0);
     }
 
