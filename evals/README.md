@@ -10,7 +10,9 @@ not something this project has). What's documented here instead is five rounds o
 work against this codebase — three static code-review passes and two live CLI execution passes.
 Rounds 1-3 were performed in a single review session on 2026-08-09/10; Rounds 4-5 in a follow-up
 hardening session on 2026-08-10, targeting v0.1.0. Every issue filed in every round was also fixed
-and verified in the same session it was filed in.
+and verified in the same session it was filed in. That same hardening session also expanded the
+test suite (39→73 tests) and shipped `CHANGELOG.md` plus the `v0.1.0` git tag/release — both
+covered in their own sections below, between Rounds 4 and 5.
 
 ## TL;DR
 
@@ -289,9 +291,45 @@ Fixed in `187a55c`: both helpers replaced with a single O(n) precomputation each
 `scan_links()` instead of repeated from every candidate position.
 
 All three fixed, verified (`cargo build`/`cargo test`, 31→39 tests/`cargo clippy`/`cargo fmt`), and
-pushed in the same session. A follow-up pass then expanded edge-case coverage (39→73 tests: empty
-input, huge/adversarial documents, further fence variants, further URL scheme extremes) without
-finding further issues.
+pushed in the same session.
+
+## Test suite expansion for v0.1.0: 39 → 73 tests
+
+Round 4's three fixes closed specific, reproducible bugs, but the standalone repros used to find
+them weren't part of the committed test suite. A follow-up pass (`af111d1`) added 34 new tests
+across four categories (`src/checks.rs` +171 lines, `src/llm.rs` +69, `src/spec.rs` +152 — 392
+lines total), without finding any further issues — this pass was coverage hardening, not another
+bug hunt:
+
+- **Empty input** — `parse_front_matter`/`headings`/`scan_links`/`metrics`/`format_issues` on `""`;
+  `strip_wrapping_fence`/`extract_json` on `""` and whitespace-only text; `is_internal_url` with an
+  empty `url`/`site_domain`. Also a brand-new `spec.rs` test module — this file had **zero** test
+  coverage before this pass — exercising `Spec::load`'s validation on an empty/whitespace keyword,
+  empty criteria, zero weight, duplicate ids, and inverted min/max ranges.
+- **Huge documents** — a ~2,000,000-character realistic document run through `metrics()`/
+  `format_issues()`, plus two large-adversarial-input timing regressions for `scan_links()`
+  (400,000 unmatched `[` characters; 100,000 unclosed `[x](` groups) that assert completion well
+  under a second — a direct regression guard so the #17 O(n) fix can't silently degrade back to
+  O(n²) later.
+- **Fence variants** — empty string, whitespace-only, CRLF line endings, an immediately-closed
+  empty fence, digit/mixed-case language tags, an indented closer, tilde (`~~~`) fences (documents
+  that these are **not** stripped — explicitly unsupported, not silently broken), and trailing
+  chatter after the closer (documents the deliberate no-strip behavior when the wrapper doesn't
+  bound the entire response).
+- **URL scheme extremes** — `data:`, `javascript:`, `file:`, `blob:`, `about:`, `ws:`, `wss:`,
+  `chrome:` schemes; scheme+host case-insensitivity; an IPv6 host with a port; userinfo-based
+  host-spoofing attempts; bare-domain (no path) URLs; and fragment/query-only URLs.
+
+`cargo test` result: 39 → 73 tests, all passing.
+
+## v0.1.0 release: CHANGELOG.md and git tag
+
+`Cargo.toml` was already at `0.1.0` (no version bump needed). Added `CHANGELOG.md` in [Keep a
+Changelog](https://keepachangelog.com/en/1.1.0/) format, covering every issue in this document
+(#2-#9, #15-#17) under `Added`/`Fixed`/`Security`/`Changed`/`Testing` — the three host-spoofing/DoS
+findings (#6, #16, #17) are filed under `Security`, not `Fixed`, per Keep a Changelog's own
+convention for that category. Tagged `v0.1.0` at `b6e1eb3` and published a GitHub release:
+<https://github.com/Loop-Suite/SEO-Loop/releases/tag/v0.1.0>.
 
 ## Round 5: real CLI execution for v0.1.0, different spec/brief — 0 issues, real cost $0.2388
 
