@@ -208,12 +208,19 @@ fn find_matching_bracket_close(chars: &[char], from: usize) -> Option<usize> {
 /// Determines whether an absolute URL's host is exactly `site_domain` or one of its subdomains.
 /// (Previously this only checked substring containment with `contains`, so hosts like `notexample.com`
 /// or `example.com.evil.com` could be misclassified as an "internal link".)
+///
+/// Protocol-relative URLs (`//host/path`) are checked the same way as `http(s)://` (they have a host,
+/// just no scheme). Any other absolute URL with an explicit non-http(s) scheme (`mailto:`, `tel:`,
+/// `ftp:`, etc.) is external — it is not a same-site relative path just because it isn't `http(s)://`
+/// (fixes #6: these used to fall through to the "no scheme -> relative path" default and were
+/// misclassified as internal).
 fn is_internal_url(url: &str, site_domain: &str) -> bool {
     let low = url.to_lowercase();
-    let rest = low
+    let after_scheme = low
         .strip_prefix("https://")
-        .or_else(|| low.strip_prefix("http://"));
-    match rest {
+        .or_else(|| low.strip_prefix("http://"))
+        .or_else(|| low.strip_prefix("//"));
+    match after_scheme {
         Some(rest) => {
             if site_domain.is_empty() {
                 return false;
@@ -223,7 +230,24 @@ fn is_internal_url(url: &str, site_domain: &str) -> bool {
             let domain = site_domain.to_lowercase();
             host == domain || host.ends_with(&format!(".{domain}"))
         }
-        None => true, // relative paths without a scheme are treated as internal links
+        None => !has_url_scheme(&low), // relative paths without a scheme are internal
+    }
+}
+
+/// Whether `s` starts with an explicit URL scheme (`scheme:`, e.g. `mailto:`, `tel:`, `ftp:`) per
+/// RFC 3986 §3.1 — a letter, then letters/digits/`+`/`-`/`.`, then `:`. Used to tell apart e.g.
+/// `mailto:a@b.com` (external, non-http(s) scheme) from a relative path like `/a` or `a/b.html`
+/// (internal, no scheme at all).
+fn has_url_scheme(s: &str) -> bool {
+    match s.find(':') {
+        Some(i) if i > 0 => {
+            let scheme = &s[..i];
+            scheme.starts_with(|c: char| c.is_ascii_alphabetic())
+                && scheme
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
+        }
+        _ => false,
     }
 }
 
@@ -843,6 +867,23 @@ mod tests {
         assert!(is_internal_url("https://example.com/a", "example.com"));
         assert!(is_internal_url("https://blog.example.com/a", "example.com"));
         assert!(is_internal_url("/relative/path", "example.com"));
+    }
+
+    #[test]
+    fn schemeless_and_non_http_absolute_urls_are_not_internal() {
+        // Regression test for #6: URLs without an http(s):// prefix used to fall through to the
+        // "relative path" default and were misclassified as internal, regardless of host/scheme.
+        assert!(!is_internal_url("//evil.example.org/a", "example.com"));
+        assert!(!is_internal_url("mailto:someone@other.com", "example.com"));
+        assert!(!is_internal_url("ftp://files.other.com/a", "example.com"));
+        assert!(!is_internal_url("tel:+15551234567", "example.com"));
+        // A protocol-relative URL on the actual site domain is still internal.
+        assert!(is_internal_url("//example.com/a", "example.com"));
+        assert!(is_internal_url("//blog.example.com/a", "example.com"));
+        // Genuine relative paths are unaffected.
+        assert!(is_internal_url("/relative/path", "example.com"));
+        assert!(is_internal_url("relative/page.html", "example.com"));
+        assert!(is_internal_url("#anchor", "example.com"));
     }
 
     #[test]
