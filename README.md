@@ -370,15 +370,18 @@ These are stated directly in the codebase (`checks.rs` comments, README-adjacent
 
 ## Real-world validation
 
-Real numbers, not estimates: [`evals/README.md`](evals/README.md) records three actual review rounds
-against this codebase — two static code-review passes and one live CLI execution pass, all in a
-single session, every issue filed also fixed and verified.
+Real numbers, not estimates: [`evals/README.md`](evals/README.md) records five actual review rounds
+against this codebase — three static code-review passes and two live CLI execution passes, across
+an initial review session and a follow-up v0.1.0 hardening session, every issue filed also fixed
+and verified.
 
 | Round | Method | Issues | Cost |
 |---|---|---|---|
 | 1–2. Static review | manual code reading, no LLM calls | 7/7 fixed | $0 |
 | 3. Real CLI execution | `claude -p --model haiku` via `seo gen` | 1/1 fixed | $0.3941 |
-| **Total** | | **8/8 fixed** | **$0.3941** |
+| 4. Adversarial re-audit (v0.1.0) | manual code reading, no LLM calls | 3/3 fixed | $0 |
+| 5. Real CLI execution (v0.1.0), different spec/brief | `claude -p --model haiku` via `seo gen` | 0 — clean | $0.2388 |
+| **Total** | | **11/11 fixed** | **$0.6329** |
 
 The one bug static review could never have caught: in real runs, haiku wrapped its entire
 response — frontmatter and body together — in a stray outer code fence, despite the prompt
@@ -386,7 +389,19 @@ explicitly saying not to. `Llm::text()` (used by `generate()`/`revise()`) had no
 unlike the JSON response path which already tolerated this — so `title_chars`/`meta_chars` silently
 came back `0`/`0` and Flesch scores came back `null`, with no error raised. Fixed by giving the
 plain-text path the same fence tolerance the JSON path already had, and verified by re-running the
-same live pipeline. Full findings, before/after data, and caveats: [`evals/README.md`](evals/README.md).
+same live pipeline.
+
+The follow-up v0.1.0 hardening round re-examined that same fix and #6's host-spoofing fix as if
+seeing them for the first time, and found three more real bugs: a CommonMark-valid 4+ backtick
+nested fence that defeated the fence-stripping fix the same way the original bug did; a
+backslash-normalization gap in `is_internal_url()` (browsers treat `\` like `/` in http(s) URLs —
+same host-spoofing class as #6, reached a different way); and an O(n²) worst case in `scan_links()`
+measured at 2.03s on an 80,000-character adversarial input, since fixed to O(n). A second live run
+against a different spec/brief afterward came back clean. The test suite also grew from 39 to 73
+tests (empty input, multi-megabyte documents, further fence variants, further URL scheme extremes),
+and the result was shipped as [`CHANGELOG.md`](CHANGELOG.md) plus the
+[`v0.1.0`](https://github.com/Loop-Suite/SEO-Loop/releases/tag/v0.1.0) tag/release. Full findings,
+before/after data, and caveats: [`evals/README.md`](evals/README.md).
 
 ## What was deliberately not built
 
