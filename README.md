@@ -368,6 +368,26 @@ These are stated directly in the codebase (`checks.rs` comments, README-adjacent
 - `claude -p` exposes no temperature control, so draft diversity comes entirely from the `angles` prompts, not sampling temperature.
 - Output is Markdown with frontmatter; converting that into a specific CMS's publish format is out of scope.
 
+## Real-world validation
+
+Real numbers, not estimates: [`evals/README.md`](evals/README.md) records three actual review rounds
+against this codebase — two static code-review passes and one live CLI execution pass, all in a
+single session, every issue filed also fixed and verified.
+
+| Round | Method | Issues | Cost |
+|---|---|---|---|
+| 1–2. Static review | manual code reading, no LLM calls | 7/7 fixed | $0 |
+| 3. Real CLI execution | `claude -p --model haiku` via `seo gen` | 1/1 fixed | $0.3941 |
+| **Total** | | **8/8 fixed** | **$0.3941** |
+
+The one bug static review could never have caught: in real runs, haiku wrapped its entire
+response — frontmatter and body together — in a stray outer code fence, despite the prompt
+explicitly saying not to. `Llm::text()` (used by `generate()`/`revise()`) had no fence-stripping,
+unlike the JSON response path which already tolerated this — so `title_chars`/`meta_chars` silently
+came back `0`/`0` and Flesch scores came back `null`, with no error raised. Fixed by giving the
+plain-text path the same fence tolerance the JSON path already had, and verified by re-running the
+same live pipeline. Full findings, before/after data, and caveats: [`evals/README.md`](evals/README.md).
+
 ## What was deliberately not built
 
 Two backlog items from `docs/research-and-evidence-survey-2026-08-01.md` (§5) were left unimplemented on purpose, per that document's own conclusion:
