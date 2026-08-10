@@ -186,3 +186,155 @@ impl Spec {
             .join("\n")
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn write_temp_toml(name: &str, contents: &str) -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!("seo-loop-spec-test-{name}.toml"));
+        std::fs::write(&path, contents).expect("write temp spec file");
+        path
+    }
+
+    const VALID_MIN: &str = r#"
+name = "Test content type"
+keyword = "running shoes"
+[[criteria]]
+id = "x"
+name = "X"
+weight = 1.0
+"#;
+
+    #[test]
+    fn load_handles_empty_file() {
+        let path = write_temp_toml("empty-file", "");
+        let err = Spec::load(&path).unwrap_err();
+        assert!(format!("{err:#}").contains("Failed to parse"), "{err:#}");
+    }
+
+    #[test]
+    fn load_rejects_empty_keyword() {
+        let toml = r#"
+name = "Test content type"
+keyword = ""
+[[criteria]]
+id = "x"
+name = "X"
+weight = 1.0
+"#;
+        let path = write_temp_toml("empty-keyword", toml);
+        let err = Spec::load(&path).unwrap_err();
+        assert!(format!("{err:#}").contains("keyword is empty"), "{err:#}");
+    }
+
+    #[test]
+    fn load_rejects_whitespace_only_keyword() {
+        let toml = r#"
+name = "Test content type"
+keyword = "   "
+[[criteria]]
+id = "x"
+name = "X"
+weight = 1.0
+"#;
+        let path = write_temp_toml("whitespace-keyword", toml);
+        let err = Spec::load(&path).unwrap_err();
+        assert!(format!("{err:#}").contains("keyword is empty"), "{err:#}");
+    }
+
+    #[test]
+    fn load_rejects_empty_criteria_list() {
+        let toml = "name = \"Test content type\"\nkeyword = \"running shoes\"\ncriteria = []\n";
+        let path = write_temp_toml("empty-criteria", toml);
+        let err = Spec::load(&path).unwrap_err();
+        assert!(format!("{err:#}").contains("criteria is empty"), "{err:#}");
+    }
+
+    #[test]
+    fn load_rejects_zero_weight_criterion() {
+        let toml = r#"
+name = "Test content type"
+keyword = "running shoes"
+[[criteria]]
+id = "x"
+name = "X"
+weight = 0.0
+"#;
+        let path = write_temp_toml("zero-weight", toml);
+        let err = Spec::load(&path).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("weight must all be greater than 0"),
+            "{err:#}"
+        );
+    }
+
+    #[test]
+    fn load_rejects_duplicate_criteria_ids() {
+        let toml = r#"
+name = "Test content type"
+keyword = "running shoes"
+[[criteria]]
+id = "x"
+name = "X"
+weight = 1.0
+[[criteria]]
+id = "x"
+name = "Y"
+weight = 1.0
+"#;
+        let path = write_temp_toml("dup-ids", toml);
+        let err = Spec::load(&path).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("duplicate criteria id"),
+            "{err:#}"
+        );
+    }
+
+    #[test]
+    fn load_rejects_inverted_title_range() {
+        // title_min/title_max must come before [[criteria]] — TOML would otherwise attach them
+        // as (ignored) extra fields on the last table-array entry instead of top-level keys.
+        let toml = r#"
+name = "Test content type"
+keyword = "running shoes"
+title_min = 60
+title_max = 50
+[[criteria]]
+id = "x"
+name = "X"
+weight = 1.0
+"#;
+        let path = write_temp_toml("inverted-title", toml);
+        let err = Spec::load(&path).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("title_min cannot be greater than title_max"),
+            "{err:#}"
+        );
+    }
+
+    #[test]
+    fn load_accepts_minimal_valid_spec_and_fills_defaults() {
+        let path = write_temp_toml("valid-minimal", VALID_MIN);
+        let spec = Spec::load(&path).expect("minimal spec should load");
+        assert_eq!(spec.keyword, "running shoes");
+        assert_eq!(spec.title_min, 50);
+        assert_eq!(spec.title_max, 60);
+        assert!(spec.sections.is_empty());
+        assert!(spec.angles.is_empty());
+    }
+
+    #[test]
+    fn sections_prompt_handles_empty_sections() {
+        let spec_toml = write_temp_toml("sections-prompt-empty", VALID_MIN);
+        let spec = Spec::load(&spec_toml).unwrap();
+        assert!(spec.sections_prompt().contains("No recommended outline"));
+    }
+
+    #[test]
+    fn rubric_prompt_handles_single_criterion() {
+        let spec_toml = write_temp_toml("rubric-prompt-single", VALID_MIN);
+        let spec = Spec::load(&spec_toml).unwrap();
+        assert!(spec.rubric_prompt().contains("weight 100%"));
+    }
+}

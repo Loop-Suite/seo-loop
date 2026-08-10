@@ -1095,4 +1095,175 @@ mod tests {
         assert_eq!(m.internal_links, 2);
         assert_eq!(m.citation_links, 1);
     }
+
+    // ---- Edge cases: empty input ------------------------------------------------------------
+
+    #[test]
+    fn parse_front_matter_handles_empty_document() {
+        let (t, m, b) = parse_front_matter("");
+        assert_eq!(t, None);
+        assert_eq!(m, None);
+        assert_eq!(b, "");
+    }
+
+    #[test]
+    fn headings_handles_empty_document() {
+        assert!(headings("").is_empty());
+    }
+
+    #[test]
+    fn scan_links_handles_empty_document() {
+        assert!(scan_links("").is_empty());
+    }
+
+    #[test]
+    fn metrics_and_format_issues_handle_empty_document_without_panicking() {
+        let spec = test_spec();
+        let m = metrics("", &spec);
+        assert_eq!(m.title_chars, 0);
+        assert_eq!(m.meta_chars, 0);
+        assert_eq!(m.h1_count, 0);
+        assert_eq!(m.chars, 0);
+        assert!(m.flesch_reading_ease.is_none());
+        assert!(m.korean_readability_heuristic.is_none());
+
+        let issues = format_issues(&spec, "");
+        // An empty document should be flagged for every structural requirement, not panic.
+        assert!(issues.iter().any(|i| i.contains("Missing title")));
+        assert!(issues
+            .iter()
+            .any(|i| i.contains("Missing meta_description")));
+        assert!(issues.iter().any(|i| i.contains("No H1")));
+    }
+
+    #[test]
+    fn is_internal_url_handles_empty_url_and_empty_site_domain() {
+        assert!(is_internal_url("", "example.com")); // empty string parses as a relative path
+        assert!(!is_internal_url("https://example.com/a", "")); // no site domain -> can't confirm internal
+        assert!(is_internal_url("/relative/path", "")); // still a relative path -> internal
+    }
+
+    // ---- Edge cases: huge documents ----------------------------------------------------------
+
+    #[test]
+    fn scan_links_stays_fast_on_large_adversarial_unmatched_brackets() {
+        // At the old O(n^2) complexity this would have taken well over a minute (extrapolating
+        // the measured 2.03s @ 80k chars); the O(n) fix (#17) should finish in well under a
+        // second even at 5x that size. Generous bound to avoid CI flakiness while still failing
+        // fast if the quadratic behavior is ever reintroduced.
+        let doc = "[".repeat(400_000);
+        let start = std::time::Instant::now();
+        let links = scan_links(&doc);
+        let elapsed = start.elapsed();
+        assert!(links.is_empty());
+        assert!(
+            elapsed.as_secs() < 5,
+            "scan_links took {elapsed:?} on 400k unmatched brackets — possible quadratic regression"
+        );
+    }
+
+    #[test]
+    fn scan_links_stays_fast_on_large_adversarial_unclosed_parens() {
+        let doc = "[a](".repeat(100_000);
+        let start = std::time::Instant::now();
+        let links = scan_links(&doc);
+        let elapsed = start.elapsed();
+        assert!(links.is_empty());
+        assert!(
+            elapsed.as_secs() < 5,
+            "scan_links took {elapsed:?} on 100k unclosed-paren groups — possible quadratic regression"
+        );
+    }
+
+    #[test]
+    fn metrics_and_format_issues_handle_huge_realistic_document() {
+        let spec = test_spec();
+        let paragraph = "Running shoes are a great choice for daily training. ".repeat(20);
+        let mut body = String::from("# How to choose running shoes\n\n");
+        for i in 0..2000 {
+            body.push_str(&format!("## Section {i}\n\n{paragraph}\n\n"));
+        }
+        let doc = format!(
+            "---\ntitle: \"A complete, detailed guide to choosing running shoes\"\nmeta_description: \"A very detailed and helpful explanation of how to choose running shoes, long enough\"\n---\n{body}"
+        );
+        let start = std::time::Instant::now();
+        let m = metrics(&doc, &spec);
+        let issues = format_issues(&spec, &doc);
+        let elapsed = start.elapsed();
+        assert!(
+            m.chars > 1_000_000,
+            "expected a multi-MB body, got {} chars",
+            m.chars
+        );
+        assert_eq!(m.h1_count, 1);
+        assert!(!issues.is_empty()); // too many internal-link-count / heading-skip style issues expected
+        assert!(
+            elapsed.as_secs() < 5,
+            "metrics()/format_issues() took {elapsed:?} on a ~2000-section document"
+        );
+    }
+
+    // ---- Edge cases: URL scheme extremes -----------------------------------------------------
+
+    #[test]
+    fn is_internal_url_treats_other_schemes_as_external() {
+        for url in [
+            "data:text/html;base64,PHNjcmlwdD4=",
+            "javascript:alert(1)",
+            "file:///etc/passwd",
+            "blob:https://example.com/uuid",
+            "about:blank",
+            "ws://example.com/socket",
+            "wss://example.com/socket",
+            "chrome://settings",
+        ] {
+            assert!(
+                !is_internal_url(url, "example.com"),
+                "{url} should be external"
+            );
+        }
+    }
+
+    #[test]
+    fn is_internal_url_is_case_insensitive_on_scheme_and_host() {
+        assert!(is_internal_url("HTTPS://EXAMPLE.COM/a", "example.com"));
+        assert!(is_internal_url("https://example.com/a", "EXAMPLE.COM"));
+        assert!(!is_internal_url("HTTPS://EVIL.COM/a", "example.com"));
+    }
+
+    #[test]
+    fn is_internal_url_handles_ipv6_host_and_port() {
+        // No dedicated IPv6 support — falls through to "not the configured domain" -> external.
+        // Safe direction (never falsely internal); locked in as a regression test.
+        assert!(!is_internal_url("https://[::1]:8080/a", "example.com"));
+        assert!(is_internal_url("https://example.com:8080/a", "example.com"));
+    }
+
+    #[test]
+    fn is_internal_url_handles_userinfo_host_spoofing_attempts() {
+        // Classic "looks like good.com but isn't" trick (userinfo before the real host). Not
+        // parsed as userinfo at all here, so it never matches site_domain either way — the
+        // safe/conservative outcome (never falsely internal) is what matters, not why.
+        assert!(!is_internal_url(
+            "https://example.com@evil.com/a",
+            "example.com"
+        ));
+        assert!(!is_internal_url(
+            "https://evil.com@example.com/a",
+            "example.com"
+        ));
+    }
+
+    #[test]
+    fn is_internal_url_handles_bare_domain_with_no_path() {
+        assert!(is_internal_url("https://example.com", "example.com"));
+        assert!(is_internal_url("https://blog.example.com", "example.com"));
+        assert!(!is_internal_url("https://evil.com", "example.com"));
+    }
+
+    #[test]
+    fn is_internal_url_handles_fragment_and_query_only_urls() {
+        assert!(is_internal_url("#section", "example.com"));
+        assert!(is_internal_url("?q=search", "example.com"));
+    }
 }

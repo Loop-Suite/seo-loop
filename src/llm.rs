@@ -376,4 +376,73 @@ mod tests {
         let raw = "```\n---\ntitle: \"x\"\n---\n\nbody\n`````";
         assert_eq!(strip_wrapping_fence(raw), "---\ntitle: \"x\"\n---\n\nbody");
     }
+
+    // ---- Edge cases: empty input ----------------------------------------------------------
+
+    #[test]
+    fn strip_wrapping_fence_handles_empty_string() {
+        assert_eq!(strip_wrapping_fence(""), "");
+    }
+
+    #[test]
+    fn strip_wrapping_fence_handles_whitespace_only_string() {
+        let raw = "   \n\t\n  ";
+        assert_eq!(strip_wrapping_fence(raw), raw);
+    }
+
+    #[test]
+    fn extract_json_handles_empty_string() {
+        assert!(extract_json("").is_err());
+    }
+
+    #[test]
+    fn extract_json_handles_whitespace_only_string() {
+        assert!(extract_json("   \n\t  ").is_err());
+    }
+
+    // ---- Edge cases: further fence variants ------------------------------------------------
+
+    #[test]
+    fn strip_wrapping_fence_strips_empty_fenced_body() {
+        // Open immediately followed by close, nothing in between.
+        assert_eq!(strip_wrapping_fence("```\n```"), "");
+    }
+
+    #[test]
+    fn strip_wrapping_fence_handles_crlf_line_endings() {
+        let raw = "```\r\n---\r\ntitle: \"x\"\r\n---\r\n\r\nbody\r\n```";
+        // str::lines() strips "\r\n" as a single line terminator (recognizing the fence
+        // boundaries correctly either way), and the rejoin uses plain "\n" — so CRLF input comes
+        // out LF-normalized. Confirms no panic/mis-slice on CRLF, not byte-for-byte preservation.
+        assert_eq!(strip_wrapping_fence(raw), "---\ntitle: \"x\"\n---\n\nbody");
+    }
+
+    #[test]
+    fn strip_wrapping_fence_accepts_language_tag_with_digits_and_mixed_case() {
+        let raw = "```JSON5\n---\ntitle: \"x\"\n---\n\nbody\n```";
+        assert_eq!(strip_wrapping_fence(raw), "---\ntitle: \"x\"\n---\n\nbody");
+    }
+
+    #[test]
+    fn strip_wrapping_fence_accepts_closer_with_trailing_indentation() {
+        // Closing fence indented (trailing on the line is trimmed by the existing .trim() call).
+        let raw = "```\n---\ntitle: \"x\"\n---\n\nbody\n   ```   ";
+        assert_eq!(strip_wrapping_fence(raw), "---\ntitle: \"x\"\n---\n\nbody");
+    }
+
+    #[test]
+    fn strip_wrapping_fence_does_not_strip_tilde_fences() {
+        // Documents current, conservative behavior: only backtick fences are recognized (CommonMark
+        // also allows ~~~ fences, but real models overwhelmingly use backticks in practice).
+        let raw = "~~~\n---\ntitle: \"x\"\n---\n\nbody\n~~~";
+        assert_eq!(strip_wrapping_fence(raw), raw);
+    }
+
+    #[test]
+    fn strip_wrapping_fence_leaves_untouched_when_trailing_chatter_after_close() {
+        // Deliberately conservative design: text after the closing fence breaks the "whole
+        // response is the wrapper" assumption, so nothing is stripped.
+        let raw = "```\n---\ntitle: \"x\"\n---\n\nbody\n```\nHope this helps!";
+        assert_eq!(strip_wrapping_fence(raw), raw);
+    }
 }
