@@ -146,20 +146,39 @@ fn judge_panel(cli: &Cli) -> Vec<Llm> {
     }
 }
 
+/// Whether every model in `judge_model` (comma-separated, trimmed, empty entries ignored) is
+/// identical to `model` — i.e. the judge panel has zero actual diversity from the generation
+/// model, so every scoring round is fully self-scored (correlated, not independent).
+///
+/// Fixes #8: this used to compare the whole judge-model list for exact equality against a
+/// single-element `[m]`, via `Iterator::eq`, which requires equal *length* too. That correctly
+/// caught `--judge-model sonnet` (one entry) but missed `--judge-model sonnet,sonnet` (or any
+/// repeated-N-times variant) even though every entry is still identically the generation model --
+/// still 100% self-scoring, just silently unwarned because the lengths (2 vs. 1) didn't match.
+fn judge_model_matches_gen(model: Option<&str>, judge_model: Option<&str>) -> bool {
+    let (Some(m), Some(j)) = (model, judge_model) else {
+        return false;
+    };
+    let entries: Vec<&str> = j
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .collect();
+    !entries.is_empty() && entries.iter().all(|e| *e == m)
+}
+
 fn real_main() -> Result<()> {
     let cli = Cli::parse();
     let gen_llm = build_llm(&cli, cli.model.clone());
     let judges = judge_panel(&cli);
     // Warn on self-scoring both when --judge-model is omitted (implicitly reuses --model) and
-    // when it's explicitly given the same single model as --model (fixes #5: previously only the
-    // omitted case was detected, so `--model sonnet --judge-model sonnet` -- genuine self-scoring --
-    // silently printed no warning, contradicting the README's Limitations section).
-    let judge_model_matches_gen = cli.judge_model.as_deref().is_some_and(|j| {
-        cli.model
-            .as_deref()
-            .is_some_and(|m| j.split(',').map(str::trim).eq([m]))
-    });
-    if cli.judge_model.is_none() || judge_model_matches_gen {
+    // when every model in --judge-model is the same single model as --model (fixes #5: previously
+    // only an omitted --judge-model was detected, so `--model sonnet --judge-model sonnet` --
+    // genuine self-scoring -- silently printed no warning, contradicting the README's Limitations
+    // section).
+    if cli.judge_model.is_none()
+        || judge_model_matches_gen(cli.model.as_deref(), cli.judge_model.as_deref())
+    {
         eprintln!(
             "Note: the generation model and judge model are the same. Since there's a bias toward \
              rating one's own style favorably, it's better to specify a different model with --judge-model."
@@ -425,4 +444,36 @@ fn collect_docs(input: &Path) -> Result<Vec<PathBuf>> {
         .collect();
     v.sort();
     Ok(v)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn judge_model_matches_gen_detects_repeated_same_model_panel() {
+        // A single matching entry (already covered before #8).
+        assert!(judge_model_matches_gen(Some("sonnet"), Some("sonnet")));
+        // Regression for #8: multiple entries, all identical to --model, must still count as
+        // full self-scoring even though the list length no longer equals 1.
+        assert!(judge_model_matches_gen(
+            Some("sonnet"),
+            Some("sonnet,sonnet")
+        ));
+        assert!(judge_model_matches_gen(
+            Some("sonnet"),
+            Some(" sonnet , sonnet , sonnet ")
+        ));
+    }
+
+    #[test]
+    fn judge_model_matches_gen_ignores_genuinely_mixed_panels() {
+        assert!(!judge_model_matches_gen(
+            Some("sonnet"),
+            Some("sonnet,haiku")
+        ));
+        assert!(!judge_model_matches_gen(Some("opus"), Some("sonnet,haiku")));
+        assert!(!judge_model_matches_gen(None, Some("sonnet")));
+        assert!(!judge_model_matches_gen(Some("sonnet"), None));
+    }
 }
