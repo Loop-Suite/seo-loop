@@ -227,28 +227,46 @@ fn is_internal_url(url: &str, site_domain: &str) -> bool {
     }
 }
 
-fn norm_kw(s: &str) -> String {
-    s.chars()
-        .filter(|c| !c.is_whitespace())
-        .collect::<String>()
-        .to_lowercase()
+/// Splits into lowercase word tokens, trimming non-alphanumeric characters (punctuation) from
+/// each token's edges. Used for word-boundary-respecting keyword matching (fixes #3: stripping
+/// all whitespace before a raw substring search let unrelated adjacent words accidentally spell
+/// out the keyword, e.g. "running shoe sale" falsely matching "running shoes").
+fn tokenize_kw(s: &str) -> Vec<String> {
+    s.split_whitespace()
+        .map(|w| {
+            w.trim_matches(|c: char| !c.is_alphanumeric())
+                .to_lowercase()
+        })
+        .filter(|w| !w.is_empty())
+        .collect()
 }
 
 fn contains_kw(haystack: &str, keyword: &str) -> bool {
-    let kw = norm_kw(keyword);
-    if kw.is_empty() {
-        return false;
-    }
-    norm_kw(haystack).contains(&kw)
+    count_kw_occurrences(haystack, keyword) > 0
 }
 
-/// Number of (non-overlapping) occurrences of keyword within the normalized haystack.
+/// Number of (non-overlapping) occurrences of keyword within the haystack, matched as a
+/// contiguous run of word tokens rather than a raw substring (word-boundary respecting).
 fn count_kw_occurrences(haystack: &str, keyword: &str) -> usize {
-    let kw = norm_kw(keyword);
+    let kw = tokenize_kw(keyword);
     if kw.is_empty() {
         return 0;
     }
-    norm_kw(haystack).matches(&kw).count()
+    let hay = tokenize_kw(haystack);
+    if hay.len() < kw.len() {
+        return 0;
+    }
+    let mut count = 0usize;
+    let mut i = 0usize;
+    while i + kw.len() <= hay.len() {
+        if hay[i..i + kw.len()] == kw[..] {
+            count += 1;
+            i += kw.len(); // non-overlapping
+        } else {
+            i += 1;
+        }
+    }
+    count
 }
 
 /// Concatenates only the plain prose (excluding heading lines) from the body and takes the first `limit` chars (an approximation of the intro).
@@ -855,6 +873,16 @@ mod tests {
     fn keyword_occurrence_count() {
         let body = "Running shoes story. Running shoes are good. RunningShoe and running shoes.";
         assert_eq!(count_kw_occurrences(body, "running shoes"), 3);
+    }
+
+    #[test]
+    fn keyword_match_respects_word_boundaries() {
+        // Regression test for #3: whitespace-stripped substring matching used to let unrelated
+        // adjacent words accidentally spell out the keyword ("running shoe" + "sale" -> contains
+        // "shoesale" -> contains "shoes"). Word-boundary matching must not count this as a match.
+        let body = "This is a running shoe sale event.";
+        assert!(!contains_kw(body, "running shoes"), "false positive across word boundary");
+        assert_eq!(count_kw_occurrences(body, "running shoes"), 0);
     }
 
     #[test]

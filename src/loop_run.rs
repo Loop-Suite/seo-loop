@@ -131,7 +131,7 @@ pub fn run(
     // that kind of single-axis defense, so we monitor at least one more axis here.
     //
     // Why we chose "a spike in target keyword occurrences across rounds" over "unnatural
-    // link density relative to citation_links count": checks.rs already has norm_kw/contains_kw
+    // link density relative to citation_links count": checks.rs already has tokenize_kw/contains_kw
     // keyword-normalization logic we can simply reuse (a cleaner implementation), whereas
     // flagging "low-quality links" would require actually fetching URLs to judge their
     // trustworthiness, which we explicitly excluded from this scope for the same reason as
