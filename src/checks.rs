@@ -351,7 +351,15 @@ pub fn metrics(doc: &str, spec: &Spec) -> Metrics {
 pub fn missing_sections(spec: &Spec, doc: &str) -> Vec<String> {
     let (_, _, body) = parse_front_matter(doc);
     let heads = headings(body);
-    let norm = |s: &str| s.chars().filter(|c| !c.is_whitespace()).collect::<String>();
+    // Case-insensitive, like tokenize_kw()/contains_kw() elsewhere in this file (fixes #4: this
+    // used to only strip whitespace, so a heading like "## faq" would not match a spec section
+    // titled "FAQ" and was incorrectly reported as missing).
+    let norm = |s: &str| {
+        s.chars()
+            .filter(|c| !c.is_whitespace())
+            .collect::<String>()
+            .to_lowercase()
+    };
     spec.sections
         .iter()
         .filter(|s| s.required)
@@ -725,7 +733,7 @@ fn korean_readability(body: &str) -> Option<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::spec::{Criterion, Spec};
+    use crate::spec::{Criterion, Section, Spec};
 
     fn test_spec() -> Spec {
         Spec {
@@ -883,6 +891,24 @@ mod tests {
         let body = "This is a running shoe sale event.";
         assert!(!contains_kw(body, "running shoes"), "false positive across word boundary");
         assert_eq!(count_kw_occurrences(body, "running shoes"), 0);
+    }
+
+    #[test]
+    fn missing_sections_is_case_insensitive() {
+        // Regression test for #4: a required section titled "FAQ" must be recognized even when
+        // the document heading uses different casing ("## faq").
+        let mut spec = test_spec();
+        spec.sections = vec![Section {
+            id: "faq".into(),
+            title: "FAQ".into(),
+            guide: String::new(),
+            required: true,
+        }];
+        let doc = "---\ntitle: \"A complete, detailed guide to choosing running shoes\"\nmeta_description: \"A very detailed and helpful explanation of how to choose running shoes, long enough\"\n---\n# How to choose running shoes\nBody text.\n\n## faq\nSome question and answer content.\n";
+        assert!(
+            missing_sections(&spec, doc).is_empty(),
+            "'## faq' heading should satisfy a required section titled 'FAQ'"
+        );
     }
 
     #[test]
